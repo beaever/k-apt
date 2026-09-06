@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+playwright
+pdfplumber
+pyhwp
+six
+beautifulsoup4
+openpyxl
+python-multipart

@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# backend (Python)
+backend/venv/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/app/storage/
+
+# frontend (Next.js)
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env*
+frontend/*.tsbuildinfo
+frontend/next-env.d.ts
+frontend/npm-debug.log*

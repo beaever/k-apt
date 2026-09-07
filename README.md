@@ -51,6 +51,19 @@ kapt-asphalt-collector/
 
 ## 실행 방법
 
+### 사전 준비물
+
+- Python 3.11 이상
+- Node.js 20 이상
+- git
+
+### 0. 저장소 클론
+
+```bash
+git clone https://github.com/beaever/k-apt.git
+cd k-apt
+```
+
 ### 1. 백엔드 (FastAPI)
 
 ```bash
@@ -62,21 +75,21 @@ playwright install chromium
 uvicorn app.main:app --host 127.0.0.1 --port 8420
 ```
 
-HWP 텍스트 추출은 `pyhwp`가 설치하는 `hwp5txt` CLI를 사용합니다(위 `pip install`로 함께 설치됩니다).
+HWP 텍스트 추출은 `pyhwp`가 설치하는 `hwp5html` CLI를 사용합니다(위 `pip install`로 함께 설치됩니다).
+
+정상적으로 뜨면 백엔드는 `http://127.0.0.1:8420`에서 실행됩니다.
 
 ### 2. 프런트엔드 (Next.js)
 
 ```bash
 cd frontend
+cp .env.example .env.local   # 필요하면 NEXT_PUBLIC_API_BASE 값을 백엔드 주소에 맞게 수정
 npm install
 npm run dev
 ```
 
-`frontend/.env.local`에 백엔드 주소를 지정합니다 (기본값):
-
-```
-NEXT_PUBLIC_API_BASE=http://127.0.0.1:8420
-```
+`.env.local`이 없어도 코드 기본값(`http://127.0.0.1:8420`)으로 동작하지만, 백엔드를 다른 포트/주소로
+띄웠다면 `.env.example`을 복사해 값을 맞춰주세요.
 
 개발 서버 접속 시 `http://localhost:3000`으로 접속하세요. (`127.0.0.1`로 접속하면 Next.js
 개발 서버의 HMR 웹소켓이 차단되어 화면이 계속 새로고침되는 문제가 있습니다.)
@@ -92,6 +105,10 @@ NEXT_PUBLIC_API_BASE=http://127.0.0.1:8420
 
 엑셀/결과 표의 컬럼: 공고일자 / 아파트명 / 공사명 / 세대수 / 자본금 / 실적 / 공법번호 /
 낙찰방법 / 낙찰업체 / 낙찰금액 / 상태
+
+**상태 판정 기준**: 크롤링 도중 예외가 났는지만 보지 않고, **10개 데이터 컬럼이 전부 실제
+값으로 채워졌는지**로 정상/실패를 가립니다. 자본금/실적/공법번호 중 하나라도 값을 못 찾아
+사유 문구만 채워졌으면(다른 컬럼이 다 정상이어도) 그 행은 "실패: ..."로 표시됩니다.
 
 ## 동작 원리 (4단계)
 

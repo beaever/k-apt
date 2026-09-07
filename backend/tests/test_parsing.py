@@ -9,7 +9,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.crawler.step2_download import _parse_detail_html
-from app.parser.step3_parse import parse_requirements
+from app.export.step4_excel import to_row_dict
+from app.parser.step3_parse import extract_text, parse_requirements
 
 FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
 
@@ -47,6 +48,56 @@ def test_requirement_line_extraction():
     assert "자본금 7억 이상" in result["capital"], result
     assert "5년간" in result["record"] and "5건 이상" in result["record"], result
     assert result["patent_no"] == "10-2222229", result
+
+
+def test_hwp_table_content_extracted():
+    """실제 K-apt 공고문 hwp: 참가자격(자본금/실적/특허)이 표 안에 들어있는 경우.
+
+    hwp5txt는 표 내용을 "<표>" placeholder로만 남기고 통째로 누락시키는 문제가 있어
+    hwp5html로 변환 후 파싱하도록 바꿨다. 표 안의 텍스트가 실제로 뽑히는지 확인.
+    """
+    path = os.path.join(FIXTURE_DIR, "requirement_in_table.hwp")
+    text, err = extract_text(path)
+    assert err is None, err
+    assert "<표>" not in text, text
+    result = parse_requirements(text)
+    assert "자본금 5억원 이상" in result["capital"], result
+    assert "실적 5건 이상" in result["record"], result
+    assert "10-2767595" in result["patent_no"], result
+
+
+def _complete_row():
+    return {
+        "success": True,
+        "announce_date": "2026-08-01",
+        "apt_name": "테스트아파트",
+        "work_name": "아스콘 포장공사",
+        "household_count": "500",
+        "capital": "자본금 5억 이상인 업체",
+        "capital_found": True,
+        "record": "실적 5건 이상인 업체",
+        "record_found": True,
+        "patent_no": "10-1234567",
+        "patent_no_found": True,
+        "bid_method": "최저 낙찰",
+        "winner": "테스트건설",
+        "bid_amount": "10,000,000",
+    }
+
+
+def test_row_status_normal_when_all_columns_filled():
+    row = to_row_dict(_complete_row())
+    assert row["상태"] == "정상", row
+
+
+def test_row_status_fail_when_a_field_is_reason_not_value():
+    """크롤링 자체는 성공해도, 자본금 등 값을 못 찾아 사유만 채워졌으면 "실패"로 봐야 한다."""
+    row = _complete_row()
+    row["capital"] = "공고문 내용에서 해당 항목 관련 문구를 찾지 못함"
+    row["capital_found"] = False
+    result = to_row_dict(row)
+    assert result["상태"].startswith("실패"), result
+    assert "자본금" in result["상태"], result
 
 
 if __name__ == "__main__":

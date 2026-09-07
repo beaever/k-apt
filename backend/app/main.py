@@ -127,18 +127,19 @@ async def collect(req: CollectRequest):
     if not results:
         raise HTTPException(status_code=404, detail="검색 결과가 없습니다.")
 
+    row_dicts = [step4_excel.to_row_dict(r) for r in results]
     excel_path = os.path.join(job_dir, "result.xlsx")
-    step4_excel.build_excel(results, excel_path)
+    step4_excel.build_excel(row_dicts, excel_path)
 
-    success_count = sum(1 for r in results if r.get("success", True))
-    fail_count = len(results) - success_count
+    success_count = sum(1 for rd in row_dicts if rd["상태"] == "정상")
+    fail_count = len(row_dicts) - success_count
 
     return {
         "job_id": job_id,
         "row_count": len(results),
         "success_count": success_count,
         "fail_count": fail_count,
-        "rows": [step4_excel.to_row_dict(r) for r in results],
+        "rows": row_dicts,
     }
 
 

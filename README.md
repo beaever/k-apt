@@ -131,6 +131,37 @@ source venv/bin/activate
 python tests/test_parsing.py
 ```
 
+## 배포 (무료, 1~2인 테스트 규모)
+
+계정 생성/저장소 연결/배포 버튼 클릭은 직접 하셔야 합니다. 아래는 그 준비물입니다.
+
+### 백엔드 → Render (무료 웹서비스)
+
+1. [Render](https://render.com)에서 GitHub 저장소(`beaever/k-apt`) 연결 후 "New Web Service" 생성
+   - 이 저장소 루트의 `render.yaml`을 인식시키면(Blueprint) 자동으로 아래 설정이 적용됩니다.
+   - 수동으로 만드는 경우: Root Directory `backend`, Runtime `Docker`, Instance Type `Free`
+2. 환경변수 `CORS_ORIGINS`에 배포된 프런트엔드 주소(예: `https://your-app.vercel.app`)를 입력
+3. 배포 완료 후 나오는 주소(`https://xxxx.onrender.com`)를 프런트엔드 환경변수에 사용
+
+`DETAIL_CONCURRENCY`는 무료 티어의 적은 메모리(크로미움 여러 개 동시 실행 시 부족할 수 있음)를 고려해
+`render.yaml`에서 기본 2로 낮춰뒀습니다. 필요하면 Render 대시보드에서 조정하세요.
+
+**무료 티어 제약**: 15분간 요청이 없으면 인스턴스가 슬립되고, 다음 요청 시 재기동에 수십 초가 걸립니다.
+1~2인이 가끔 쓰는 용도로는 문제없지만 상시 빠른 응답이 필요하면 유료 플랜이 필요합니다.
+
+### 프런트엔드 → Vercel (무료)
+
+1. [Vercel](https://vercel.com)에서 저장소 연결, Root Directory를 `frontend`로 지정
+2. 환경변수 `NEXT_PUBLIC_API_BASE`에 Render 백엔드 주소 입력
+3. 배포하면 `https://your-app.vercel.app` 형태의 주소가 생성됨
+
+### 알려진 배포 한계
+
+- Render 무료 인스턴스의 로컬 디스크는 재시작 시 초기화됩니다. "검색 → 엑셀 다운로드"를 같은 세션에서
+  바로 이어서 하면 문제없지만, 시간이 많이 지난 뒤 다운로드를 시도하면 파일이 사라졌을 수 있습니다.
+- 검색 범위(기간/지역)가 크면 처리 시간이 길어집니다. Render는 서버리스가 아니라 상시 대기 프로세스라
+  요청 자체에 별도 타임아웃을 걸지 않지만, 너무 오래 걸리면 브라우저 쪽에서 먼저 끊을 수 있습니다.
+
 ## 알려진 제한사항
 
 - 상세페이지/첨부파일 구조가 K-apt 자체 전자입찰, a2p.kr, kg2b.com 등 대행사별로 달라

@@ -14,9 +14,14 @@ from app.export import step4_excel
 from app.parser import step3_parse
 
 app = FastAPI(title="K-apt 아스콘 입찰 정보 수집기")
+
+# 배포 시 CORS_ORIGINS 환경변수(쉼표 구분)로 프런트엔드 주소를 제한할 수 있음.
+# 미설정 시 기존과 동일하게 전체 허용(로컬 개발용 기본값).
+_cors_origins_env = os.environ.get("CORS_ORIGINS")
+_cors_origins = [o.strip() for o in _cors_origins_env.split(",")] if _cors_origins_env else ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -24,7 +29,8 @@ app.add_middleware(
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
 os.makedirs(STORAGE_DIR, exist_ok=True)
 
-DETAIL_CONCURRENCY = 5
+# 무료 호스팅은 메모리가 적어 동시 크로미움 컨텍스트 수를 줄여야 할 수 있음.
+DETAIL_CONCURRENCY = int(os.environ.get("DETAIL_CONCURRENCY", "5"))
 
 
 class CollectRequest(BaseModel):

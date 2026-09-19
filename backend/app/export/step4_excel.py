@@ -9,9 +9,11 @@
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
+from app.crawler.step2_download import DETAIL_URL_TMPL
+
 COLUMNS = [
     "공고일자", "아파트명", "공사명", "세대수", "자본금",
-    "실적", "공법번호", "낙찰방법", "낙찰업체", "낙찰금액", "상태",
+    "실적", "공법번호", "낙찰방법", "낙찰업체", "낙찰금액", "공고 링크", "상태",
 ]
 
 # 값 대신 "사유"가 들어갈 수 있는 컬럼 -> parse_files()가 반환하는 "실제로 찾았는지" 플래그 키
@@ -53,6 +55,8 @@ def to_row_dict(r: dict) -> dict:
                 missing.append(f"{col} 정보 없음")
         status = ("실패: " + " / ".join(missing)) if missing else "정상"
 
+    bid_num = r.get("bid_num")
+    values["공고 링크"] = DETAIL_URL_TMPL.format(bid_num=bid_num) if bid_num else ""
     values["상태"] = status
     return values
 

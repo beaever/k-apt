@@ -258,7 +258,22 @@ export default function Home() {
                           }
                         >
                           {columns.map((c) =>
-                            c === "상태" ? (
+                            c === "공고 링크" ? (
+                              <td key={c} className="px-3 py-2">
+                                {row[c] ? (
+                                  <a
+                                    href={row[c]}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-blue-600 underline hover:text-blue-800 dark:text-blue-400"
+                                  >
+                                    원문 보기
+                                  </a>
+                                ) : (
+                                  "-"
+                                )}
+                              </td>
+                            ) : c === "상태" ? (
                               <td key={c} className="px-3 py-2" title={row[c]}>
                                 <span
                                   className={

@@ -85,9 +85,7 @@ node --version
 
 ### 2단계. 프로젝트 파일 받기 (처음 한 번만)
 
-1. https://github.com/beaever/k-apt 접속 후 GitHub 계정으로 로그인
-   - 비공개 저장소라서 **저장소 주인에게 GitHub 아이디를 알려주고 초대(Collaborator)를 받아야** 보입니다.
-     초대 메일의 "Accept invitation"을 누른 뒤 접속하세요. (페이지가 404로 나오면 초대가 안 된 상태)
+1. https://github.com/beaever/k-apt 접속 (로그인이나 GitHub 계정 없이 받을 수 있습니다)
 2. 초록색 **Code** 버튼 → **Download ZIP**
 3. 받은 ZIP 파일의 압축을 풀고, 폴더 이름을 `k-apt` 로 바꾼 뒤 **바탕화면(Desktop)** 에 둡니다.
 

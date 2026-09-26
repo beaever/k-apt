@@ -11,20 +11,18 @@ async def establish_session(page):
 
 
 async def open_bid_result_page(page):
-    """메인 페이지 진입 후 메뉴 클릭으로 사업자 선정(경쟁입찰) 결과 공개 페이지 진입.
+    """메인 페이지 진입 후 메뉴 링크 클릭으로 사업자 선정(경쟁입찰) 결과 공개 페이지 진입.
 
-    직접 URL 접근은 세션 미인증 에러가 발생하므로 반드시 메뉴 클릭 경로를 거친다.
+    직접 URL 접근은 세션 미인증 에러가 발생하므로 반드시 메인 페이지의 링크 클릭 경로를 거친다.
     """
     await page.goto(f"{BASE_URL}/web/main/index.do", wait_until="networkidle")
-    # 클릭을 가로채는 공지 레이어 팝업 제거
-    await page.evaluate(
-        "() => document.querySelectorAll('.layerPopup, .layerPopupClass').forEach(e => e.remove())"
-    )
-    await page.click("text=입찰정보", force=True)
-    await page.wait_for_timeout(500)
-    # 모바일 메뉴 등 동일 텍스트의 숨겨진 링크가 같이 잡힐 수 있어 보이는 요소만 선택
+    # 메뉴를 마우스로 펼쳐 클릭하면 "text=입찰정보"가 "연간 입찰정보공개" 등 다른 요소에 걸리거나
+    # 호버 메뉴가 다른 탭으로 바뀌어 링크가 안 보여 간헐적으로 실패했다. 메뉴 안의 링크 요소를
+    # DOM에서 직접 클릭하면 사용자 클릭과 같은 페이지 이동(세션 유지)이 되면서 메뉴 상태와 무관해진다.
     async with page.expect_navigation(wait_until="networkidle"):
-        await page.click("a[href='/bid/bidList.do?type=3']:visible", force=True)
+        await page.evaluate(
+            "() => document.querySelector(\"a[href='/bid/bidList.do?type=3']\").click()"
+        )
     # 페이지 전환 직후 inline script(setArea/initList 등) 파싱이 늦을 때가 있어 대기
     await page.wait_for_function("typeof setArea === 'function'")
 

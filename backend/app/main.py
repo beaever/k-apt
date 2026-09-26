@@ -138,17 +138,23 @@ async def _detail_worker(browser, row_queue: "asyncio.Queue", results: list, job
                 idx, row = row_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
-            try:
-                detail = await step2_download.fetch_detail(
-                    detail_page, row["bid_num"], row["has_attachment"], job_dir
-                )
-                # PDF/HWP 파싱은 동기(CPU/subprocess) 작업이라 이벤트 루프를 막지 않도록 스레드로 넘긴다
-                parsed = await asyncio.to_thread(
-                    step3_parse.parse_files, detail.get("files", []), detail.get("download_error")
-                )
-                results[idx] = {**row, **detail, **parsed, "success": True, "error": ""}
-            except Exception as e:
-                results[idx] = {**row, "success": False, "error": str(e)}
+            for attempt in range(2):
+                try:
+                    detail = await step2_download.fetch_detail(
+                        detail_page, row["bid_num"], row["has_attachment"], job_dir
+                    )
+                    # PDF/HWP 파싱은 동기(CPU/subprocess) 작업이라 이벤트 루프를 막지 않도록 스레드로 넘긴다
+                    parsed = await asyncio.to_thread(
+                        step3_parse.parse_files, detail.get("files", []), detail.get("download_error")
+                    )
+                    results[idx] = {**row, **detail, **parsed, "success": True, "error": ""}
+                    break
+                except Exception as e:
+                    results[idx] = {**row, "success": False, "error": str(e)}
+                    # 타임아웃 난 페이지 이동이 뒤늦게 끝나면서 다음 공고의 이동을 끊는 경우가 있어
+                    # ("interrupted by another navigation") 페이지를 새로 만들어 한 번 더 시도한다.
+                    await detail_page.close()
+                    detail_page = await context.new_page()
             job["done"] += 1
     finally:
         await context.close()

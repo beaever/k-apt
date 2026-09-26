@@ -54,6 +54,43 @@ def test_requirement_line_extraction():
     assert result["patent_no"] == "10-2222229", result
 
 
+def test_requirement_needs_value_to_count_as_found():
+    """키워드만 있고 값(금액/건수/특허번호)이 없는 줄은 "정상"으로 치지 않는다.
+    값은 뒤쪽 줄에 있으면 계속 찾아서 쓰고, 끝내 없으면 found=False."""
+    text = (
+        "4) 자본금 증명서 1부\n"
+        "사업실적 : 최근 5년간 공동주택 공사실적 5\n"
+        "건 이상인 업체\n"
+        "7) 공법 기술사용 협약서\n"
+        "(특허 제10-2767595호, 해당 단지명 표기된 공고일 이후 발행분) 1부\n"
+        "대표 전화 010-1234567\n"
+    )
+    result = parse_requirements(text)
+    assert result["capital_found"] is False, result
+    assert result["record_found"] and "5 건 이상" in result["record"], result
+    assert result["patent_no"] == "10-2767595" and result["patent_no_found"], result
+
+
+def test_absent_requirement_is_not_applicable_but_unextractable_file_is_not():
+    """공고문에 관련 문구가 아예 없으면 "해당 없음"(정상), 텍스트를 못 뽑은 파일이 섞이면 단정하지 않는다."""
+    with tempfile.TemporaryDirectory() as d:
+        doc = os.path.join(d, "a.pdf")
+        # 폭 없는 문자(U+2060)가 섞인 PDF 추출 텍스트도 금액으로 인식해야 한다
+        text = "자본금 5\u2060억원 이상인 업체\n최근 5년간 공동주택 실적 5건 이상\n"
+        import app.parser.step3_parse as p3
+
+        orig = p3.extract_text
+        p3.extract_text = lambda path: (text, None) if path == doc else ("", "스캔 PDF")
+        try:
+            r = p3.parse_files([doc])
+            assert r["capital_found"] and "5억원" in r["capital"], r
+            assert r["patent_no"] == p3.NOT_APPLICABLE and r["patent_no_found"], r
+            r = p3.parse_files([doc, os.path.join(d, "scan.pdf")])
+            assert r["patent_no"] == p3.NOT_FOUND_REASON and not r["patent_no_found"], r
+        finally:
+            p3.extract_text = orig
+
+
 def test_hwp_table_content_extracted():
     """실제 K-apt 공고문 hwp: 참가자격(자본금/실적/특허)이 표 안에 들어있는 경우.
 

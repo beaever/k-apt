@@ -1,5 +1,7 @@
 import asyncio
 import os
+import shutil
+import time
 import uuid
 from datetime import date
 
@@ -28,9 +30,17 @@ app.add_middleware(
 
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
 os.makedirs(STORAGE_DIR, exist_ok=True)
+# 이 시간보다 오래된 작업 폴더(다운로드 첨부파일 + 엑셀)는 새 작업 시작 시 삭제
+STORAGE_TTL_SEC = 24 * 3600
 
 # 무료 호스팅은 메모리가 적어 동시 크로미움 컨텍스트 수를 줄여야 할 수 있음.
 DETAIL_CONCURRENCY = int(os.environ.get("DETAIL_CONCURRENCY", "5"))
+
+# 수집은 수 분~수십 분 걸려 HTTP 요청 하나로 기다리면 브라우저/프록시가 먼저 끊는다.
+# 백그라운드 작업으로 돌리고 프런트는 상태를 폴링한다.
+# ponytail: 프로세스 메모리 보관 -> 서버 재시작 시 진행 상태 유실, 인스턴스 여러 대면 외부 저장소 필요
+JOBS: dict[str, dict] = {}
+_background_tasks: set[asyncio.Task] = set()
 
 
 class CollectRequest(BaseModel):
@@ -38,6 +48,16 @@ class CollectRequest(BaseModel):
     keyword: str
     date_start: date
     date_end: date
+
+    @field_validator("regions")
+    @classmethod
+    def _validate_regions(cls, regions):
+        if not regions:
+            raise ValueError("지역을 1개 이상 선택해야 합니다.")
+        unknown = [r for r in regions if r not in step1_search.REGION_CODES]
+        if unknown:
+            raise ValueError(f"지원하지 않는 지역입니다: {', '.join(unknown)}")
+        return regions
 
     @field_validator("date_end")
     @classmethod
@@ -53,13 +73,14 @@ class CollectRequest(BaseModel):
 
 
 async def run_collect(
-    regions: list[str], keyword: str, date_start: date, date_end: date, job_dir: str
+    regions: list[str], keyword: str, date_start: date, date_end: date, job_dir: str, job: dict
 ) -> list[dict]:
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(accept_downloads=True)
         page = await context.new_page()
 
+        job["message"] = "K-apt에 접속해 조건에 맞는 낙찰공고 목록을 검색하고 있어요"
         await step1_search.open_bid_result_page(page)
         await step1_search.search(page, regions, keyword, str(date_start), str(date_end))
 
@@ -67,6 +88,7 @@ async def run_collect(
         rows: list[dict] = []
         seen_bid_nums: set[str] = set()
         for page_no in range(1, total_pages + 1):
+            job["message"] = f"낙찰공고 목록을 수집하고 있어요 ({page_no}/{total_pages} 페이지)"
             if page_no > 1:
                 await step1_search.go_to_page(page, page_no)
             for row in await step1_search.scrape_list(page):
@@ -81,18 +103,25 @@ async def run_collect(
 
         await context.close()
 
+        job["total"] = len(rows)
+        job["message"] = "공고별 상세정보와 입찰공고문(HWP/PDF)을 처리하고 있어요"
         worker_count = min(DETAIL_CONCURRENCY, len(rows))
         workers = [
-            asyncio.create_task(_detail_worker(browser, row_queue, results, job_dir))
+            asyncio.create_task(_detail_worker(browser, row_queue, results, job_dir, job))
             for _ in range(worker_count)
         ]
-        await asyncio.gather(*workers)
+        # 워커 하나가 세션 확보 등에서 죽어도 나머지 워커가 큐를 계속 처리하도록 예외를 전파하지 않음
+        await asyncio.gather(*workers, return_exceptions=True)
 
         await browser.close()
-    return results  # type: ignore[return-value]
+    # 모든 워커가 죽어 처리되지 못한 행은 None으로 남는다 -> 실패 행으로 채워 목록에서 누락되지 않게 함
+    return [
+        r or {**row, "success": False, "error": "처리되지 않음(브라우저 세션 확보 실패)"}
+        for r, row in zip(results, rows)
+    ]
 
 
-async def _detail_worker(browser, row_queue: "asyncio.Queue", results: list, job_dir: str):
+async def _detail_worker(browser, row_queue: "asyncio.Queue", results: list, job_dir: str, job: dict):
     """워커마다 독립된 브라우저 컨텍스트(별도 세션/쿠키)를 발급받아 큐를 처리.
 
     한 세션(컨텍스트)을 여러 탭이 공유하면 동시에 서로 다른 공고의 첨부파일
@@ -113,40 +142,78 @@ async def _detail_worker(browser, row_queue: "asyncio.Queue", results: list, job
                 detail = await step2_download.fetch_detail(
                     detail_page, row["bid_num"], row["has_attachment"], job_dir
                 )
-                parsed = step3_parse.parse_files(
-                    detail.get("files", []), detail.get("download_error")
+                # PDF/HWP 파싱은 동기(CPU/subprocess) 작업이라 이벤트 루프를 막지 않도록 스레드로 넘긴다
+                parsed = await asyncio.to_thread(
+                    step3_parse.parse_files, detail.get("files", []), detail.get("download_error")
                 )
                 results[idx] = {**row, **detail, **parsed, "success": True, "error": ""}
             except Exception as e:
                 results[idx] = {**row, "success": False, "error": str(e)}
+            job["done"] += 1
     finally:
         await context.close()
 
 
+def _cleanup_old_jobs():
+    cutoff = time.time() - STORAGE_TTL_SEC
+    for name in os.listdir(STORAGE_DIR):
+        path = os.path.join(STORAGE_DIR, name)
+        if os.path.isdir(path) and os.path.getmtime(path) < cutoff:
+            shutil.rmtree(path, ignore_errors=True)
+            JOBS.pop(name, None)
+
+
+async def _run_job(job_id: str, req: CollectRequest, job_dir: str):
+    job = JOBS[job_id]
+    try:
+        results = await run_collect(
+            req.regions, req.keyword, req.date_start, req.date_end, job_dir, job
+        )
+        if not results:
+            job.update(status="error", message="검색 결과가 없습니다.")
+            return
+
+        row_dicts = [step4_excel.to_row_dict(r) for r in results]
+        step4_excel.build_excel(row_dicts, os.path.join(job_dir, "result.xlsx"))
+        success_count = sum(1 for rd in row_dicts if rd["상태"] == "정상")
+        job.update(
+            status="done",
+            rows=row_dicts,
+            success_count=success_count,
+            fail_count=len(row_dicts) - success_count,
+        )
+    except Exception as e:
+        job.update(status="error", message=f"수집 중 오류가 발생했습니다({e})")
+
+
 @app.post("/api/collect")
 async def collect(req: CollectRequest):
+    # 요청마다 크로미움이 여러 개 떠서, 동시 실행을 허용하면 무료 인스턴스 메모리가 바로 바닥난다.
+    if any(j["status"] == "running" for j in JOBS.values()):
+        raise HTTPException(
+            status_code=429, detail="다른 수집 작업이 진행 중입니다. 잠시 후 다시 시도해주세요."
+        )
+    _cleanup_old_jobs()
+
     job_id = uuid.uuid4().hex[:12]
     job_dir = os.path.join(STORAGE_DIR, job_id)
     os.makedirs(job_dir, exist_ok=True)
+    JOBS[job_id] = {"status": "running", "message": "작업을 시작하는 중", "done": 0, "total": 0}
 
-    results = await run_collect(req.regions, req.keyword, req.date_start, req.date_end, job_dir)
-    if not results:
-        raise HTTPException(status_code=404, detail="검색 결과가 없습니다.")
+    task = asyncio.create_task(_run_job(job_id, req, job_dir))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return {"job_id": job_id}
 
-    row_dicts = [step4_excel.to_row_dict(r) for r in results]
-    excel_path = os.path.join(job_dir, "result.xlsx")
-    step4_excel.build_excel(row_dicts, excel_path)
 
-    success_count = sum(1 for rd in row_dicts if rd["상태"] == "정상")
-    fail_count = len(row_dicts) - success_count
-
-    return {
-        "job_id": job_id,
-        "row_count": len(results),
-        "success_count": success_count,
-        "fail_count": fail_count,
-        "rows": row_dicts,
-    }
+@app.get("/api/collect/{job_id}")
+async def job_status(job_id: str):
+    job = JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404, detail="작업을 찾을 수 없습니다(서버가 재시작되었을 수 있음)."
+        )
+    return job
 
 
 @app.get("/api/collect/{job_id}/download")

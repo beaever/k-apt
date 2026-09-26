@@ -7,12 +7,18 @@
 import os
 import re
 import subprocess
+import sys
 import tempfile
 
 import pdfplumber
 from bs4 import BeautifulSoup
 
 FIELDS = ["capital", "record", "patent_no"]
+
+# hwp5html은 pyhwp가 파이썬과 같은 bin 폴더에 설치하는 CLI. venv를 activate하지 않고 서버를
+# 띄우면 PATH에 없어서 모든 HWP가 실패하므로, 현재 인터프리터 옆의 실행파일을 우선 사용한다.
+_BUNDLED_HWP5HTML = os.path.join(os.path.dirname(sys.executable), "hwp5html")
+HWP5HTML = _BUNDLED_HWP5HTML if os.path.exists(_BUNDLED_HWP5HTML) else "hwp5html"
 
 # 공고문 표 헤더에 "자 본 금", "실 적"처럼 글자 사이를 띄어 쓰는 관행이 매우 흔해
 # (실제 631개 첨부파일 스캔 결과 자본금 미검출 사례의 대다수가 이 패턴이었음) 글자 사이
@@ -48,9 +54,12 @@ def extract_text(path: str) -> tuple[str, str | None]:
         # 참가자격/실적 요건이 표로 작성된 공고문이 많아, hwp5html로 변환 후 HTML을 파싱해
         # 표 내용까지 포함한 전체 텍스트를 얻는다.
         with tempfile.TemporaryDirectory() as tmpdir:
-            result = subprocess.run(
-                ["hwp5html", "--output", tmpdir, path], capture_output=True, text=True
-            )
+            try:
+                result = subprocess.run(
+                    [HWP5HTML, "--output", tmpdir, path], capture_output=True, text=True
+                )
+            except FileNotFoundError:
+                return "", "HWP 변환 도구(hwp5html)를 찾지 못함(pyhwp 설치 확인 필요)"
             if result.returncode != 0:
                 reason = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "알 수 없는 오류"
                 return "", f"HWP 파싱 실패({reason[:100]})"

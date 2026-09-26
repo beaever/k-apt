@@ -8,7 +8,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.crawler.step2_download import _parse_detail_html
+import tempfile
+
+from pydantic import ValidationError
+
+from app.crawler.step2_download import _parse_detail_html, _unique_path
 from app.export.step4_excel import to_row_dict
 from app.parser.step3_parse import extract_text, parse_requirements
 
@@ -98,6 +102,27 @@ def test_row_status_fail_when_a_field_is_reason_not_value():
     result = to_row_dict(row)
     assert result["상태"].startswith("실패"), result
     assert "자본금" in result["상태"], result
+
+
+def test_unique_path_does_not_overwrite_same_filename():
+    with tempfile.TemporaryDirectory() as d:
+        first = _unique_path(d, "공고문.hwp")
+        open(first, "w").close()
+        second = _unique_path(d, "공고문.hwp")
+        assert first != second and second.endswith("공고문_1.hwp"), second
+
+
+def test_collect_request_rejects_empty_or_unknown_regions():
+    from app.main import CollectRequest
+
+    base = {"keyword": "아스콘", "date_start": "2026-01-01", "date_end": "2026-01-31"}
+    for regions in ([], ["부산"]):
+        try:
+            CollectRequest(regions=regions, **base)
+        except ValidationError:
+            continue
+        raise AssertionError(f"regions={regions} 가 통과되면 안 됨")
+    CollectRequest(regions=["서울"], **base)
 
 
 if __name__ == "__main__":

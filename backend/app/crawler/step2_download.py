@@ -11,6 +11,17 @@ def _clean(text: str) -> str:
     return " ".join(text.split())
 
 
+def _unique_path(dir_path: str, filename: str) -> str:
+    """같은 공고에 이름이 같은 첨부파일이 여러 개면 덮어쓰지 않도록 _1, _2 접미사를 붙인다."""
+    path = os.path.join(dir_path, filename)
+    stem, ext = os.path.splitext(path)
+    n = 1
+    while os.path.exists(path):
+        path = f"{stem}_{n}{ext}"
+        n += 1
+    return path
+
+
 def _kv_table(table) -> dict:
     """헤더 행(th) + 값 행(td) 1개로 구성된 K-apt 상세 테이블을 dict로 변환.
 
@@ -116,7 +127,7 @@ async def _try_download(page, bid_dir: str) -> tuple[list[str], str | None]:
 
         files = []
         for dl in downloads:
-            path = os.path.join(bid_dir, dl.suggested_filename)
+            path = _unique_path(bid_dir, dl.suggested_filename)
             await dl.save_as(path)
             files.append(path)
         return files, None
@@ -163,7 +174,7 @@ async def _fetch_external_announcement(page, bid_dir: str) -> tuple[list[str], s
                     async with doc_popup.expect_download(timeout=15000) as dl_info:
                         await link.click()
                     dl = await dl_info.value
-                    path = os.path.join(bid_dir, dl.suggested_filename)
+                    path = _unique_path(bid_dir, dl.suggested_filename)
                     await dl.save_as(path)
                     files.append(path)
                 return files, None
@@ -179,7 +190,7 @@ async def _fetch_external_announcement(page, bid_dir: str) -> tuple[list[str], s
             except Exception as e:
                 return [], f"'공고문 다운로드' 메뉴에서 PDF를 받지 못함({e})"
             dl = await dl_info.value
-            path = os.path.join(bid_dir, dl.suggested_filename)
+            path = _unique_path(bid_dir, dl.suggested_filename)
             await dl.save_as(path)
             return [path], None
 

@@ -39,7 +39,7 @@ def to_row_dict(r: dict) -> dict:
         "공법번호": r.get("patent_no", ""),
         "낙찰방법": r.get("bid_method", ""),
         "낙찰업체": r.get("winner", ""),
-        "낙찰금액": r.get("bid_amount", ""),
+        "낙찰금액": r.get("bid_amount") or r.get("winner_amount", ""),
     }
 
     if not r.get("success", True):

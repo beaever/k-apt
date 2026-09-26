@@ -6,7 +6,9 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8420";
 
 const REGIONS = ["서울", "인천", "경기"];
 
-const toDateInputValue = (d: Date) => d.toISOString().slice(0, 10);
+// toISOString()은 UTC 기준이라 한국 시간 오전 9시 이전엔 하루 전 날짜가 나온다 -> 로컬 시간대로 보정
+const toDateInputValue = (d: Date) =>
+  new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
 
 const QUICK_RANGES = [
   { label: "1주일", days: 7 },
@@ -14,14 +16,21 @@ const QUICK_RANGES = [
   { label: "1년", days: 365 },
 ];
 
-const LOADING_STEPS = [
-  "K-apt에 접속해 조건에 맞는 낙찰공고 목록을 검색하고 있어요",
-  "공고별 상세페이지에서 아파트명/세대수/낙찰업체 정보를 가져오고 있어요",
-  "첨부된 입찰공고문(HWP/PDF)에서 자본금·실적·공법번호를 추출하고 있어요",
-];
+const POLL_INTERVAL_MS = 2000;
+
+const errorMessage = async (res: Response) => {
+  const body = await res.json().catch(() => ({}));
+  const detail = body.detail;
+  return typeof detail === "string"
+    ? detail
+    : Array.isArray(detail) && detail[0]?.msg
+      ? detail[0].msg
+      : `요청 실패 (${res.status})`;
+};
 
 type Status = "idle" | "loading" | "done" | "error";
 type ResultRow = Record<string, string>;
+type Progress = { message: string; done: number; total: number };
 
 export default function Home() {
   const [regions, setRegions] = useState<string[]>(["서울", "인천", "경기"]);
@@ -39,11 +48,11 @@ export default function Home() {
   const [failCount, setFailCount] = useState(0);
   const [errorMsg, setErrorMsg] = useState("");
   const [elapsed, setElapsed] = useState(0);
+  const [progress, setProgress] = useState<Progress | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     if (status === "loading") {
-      setElapsed(0);
       timerRef.current = setInterval(() => setElapsed((s) => s + 1), 1000);
     } else if (timerRef.current) {
       clearInterval(timerRef.current);
@@ -83,9 +92,11 @@ export default function Home() {
     }
 
     setStatus("loading");
+    setElapsed(0);
     setErrorMsg("");
     setJobId(null);
     setRows([]);
+    setProgress(null);
 
     try {
       const res = await fetch(`${API_BASE}/api/collect`, {
@@ -93,22 +104,27 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ regions, keyword, date_start: dateStart, date_end: dateEnd }),
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        const detail = body.detail;
-        const message = typeof detail === "string"
-          ? detail
-          : Array.isArray(detail) && detail[0]?.msg
-            ? detail[0].msg
-            : `요청 실패 (${res.status})`;
-        throw new Error(message);
+      if (!res.ok) throw new Error(await errorMessage(res));
+      const { job_id } = await res.json();
+
+      // 수집은 오래 걸려 백그라운드 작업으로 돌고, 여기서는 완료될 때까지 상태를 폴링한다
+      while (true) {
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+        const jobRes = await fetch(`${API_BASE}/api/collect/${job_id}`);
+        if (!jobRes.ok) throw new Error(await errorMessage(jobRes));
+        const job = await jobRes.json();
+        if (job.status === "running") {
+          setProgress({ message: job.message, done: job.done, total: job.total });
+          continue;
+        }
+        if (job.status === "error") throw new Error(job.message);
+        setJobId(job_id);
+        setRows(job.rows ?? []);
+        setSuccessCount(job.success_count ?? 0);
+        setFailCount(job.fail_count ?? 0);
+        setStatus("done");
+        break;
       }
-      const data = await res.json();
-      setJobId(data.job_id);
-      setRows(data.rows ?? []);
-      setSuccessCount(data.success_count ?? 0);
-      setFailCount(data.fail_count ?? 0);
-      setStatus("done");
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : "알 수 없는 오류");
       setStatus("error");
@@ -116,7 +132,6 @@ export default function Home() {
   };
 
   const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
-  const currentStep = LOADING_STEPS[Math.min(Math.floor(elapsed / 8), LOADING_STEPS.length - 1)];
 
   return (
     <div className="flex min-h-screen justify-center bg-zinc-50 px-4 py-16 dark:bg-black">
@@ -206,7 +221,8 @@ export default function Home() {
         {status === "loading" && (
           <div className="mt-4 flex items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
             <span className="h-3 w-3 flex-none animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-600 dark:border-zinc-600 dark:border-t-zinc-300" />
-            {currentStep}
+            {progress?.message ?? "작업을 시작하는 중"}
+            {progress && progress.total > 0 && ` (${progress.done}/${progress.total}건)`}
           </div>
         )}
 

@@ -117,10 +117,10 @@ async def _try_download(page, bid_dir: str) -> tuple[list[str], str | None]:
         # 첫 다운로드가 시작될 때까지 최대 30초 폴링, 시작되면 다건 첨부 대비 추가 유예.
         # 동시 여러 탭이 같은 세션으로 요청할 때 서버 응답이 늦어질 수 있어 넉넉하게 대기
         # (실제로는 다운로드가 정상 동작하는데 짧은 타임아웃 탓에 "실패"로 오판되는 경우가 있었음).
-        for _ in range(60):
+        for _ in range(150):
             if downloads:
                 break
-            await page.wait_for_timeout(500)
+            await page.wait_for_timeout(200)
         if not downloads:
             return [], "다운로드 버튼 클릭 후 파일 수신 안 됨"
         await page.wait_for_timeout(1500)
@@ -140,7 +140,7 @@ async def _fetch_external_announcement(page, bid_dir: str) -> tuple[list[str], s
 
     대행사에 따라 두 갈래로 갈린다 (실사이트 확인 결과):
     - kg2b.com 등: 팝업 안에 "공고원문" 링크가 한 번 더 있고, 그 안에 실제 첨부파일(HWP/PDF) 링크가 있음
-    - a2p.kr 등: 공고 전체가 페이지에 HTML로 렌더링되어 있고, "공고문 다운로드" 메뉴에서
+    - a2p.kr 등: 공고 전체가 페이지에 HTML로 렌더링되어 있고, "공고문 (전체) 다운로드" 메뉴에서
       그 내용을 PDF로 내려받을 수 있음 (첨부파일은 없지만 원문 PDF는 존재)
     """
     btn = await page.query_selector("text=해당 공고 가기")
@@ -148,7 +148,8 @@ async def _fetch_external_announcement(page, bid_dir: str) -> tuple[list[str], s
         return [], "첨부파일이 없고 '해당 공고 가기' 버튼도 없어 원문을 확인할 수 없음"
 
     try:
-        async with page.expect_popup(timeout=10000) as popup_info:
+        # 대행사 사이트가 느려 10초 안에 안 뜨는 경우가 있었음 (다시 열면 정상) -> 넉넉히 대기
+        async with page.expect_popup(timeout=30000) as popup_info:
             await btn.click()
         popup = await popup_info.value
         await popup.wait_for_load_state("networkidle")
@@ -159,7 +160,7 @@ async def _fetch_external_announcement(page, bid_dir: str) -> tuple[list[str], s
         doc_link = await popup.query_selector("text=공고원문")
         if doc_link:
             try:
-                async with popup.expect_popup(timeout=10000) as doc_popup_info:
+                async with popup.expect_popup(timeout=30000) as doc_popup_info:
                     await doc_link.click()
                 doc_popup = await doc_popup_info.value
                 await doc_popup.wait_for_load_state("networkidle")
@@ -181,7 +182,8 @@ async def _fetch_external_announcement(page, bid_dir: str) -> tuple[list[str], s
             finally:
                 await doc_popup.close()
 
-        download_btn = await popup.query_selector("text=공고문 다운로드")
+        # a2p.kr은 2026년 8월경 버튼 이름을 "공고문 다운로드" -> "공고문 전체 다운로드"로 바꿨다
+        download_btn = await popup.query_selector("text=/공고문\\s*(전체\\s*)?다운로드/")
         if download_btn:
             await download_btn.click()
             try:

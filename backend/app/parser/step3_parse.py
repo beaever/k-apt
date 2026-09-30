@@ -1,25 +1,26 @@
-"""3단계: 첨부 공고문(PDF/HWP) 텍스트 파싱 -> 자본금/실적/공법번호 추출.
+"""3단계: 첨부 공고문(PDF/HWP/HWPX) 텍스트 파싱 -> 자본금/실적/공법번호 추출.
 
 값을 못 찾았을 때는 빈 문자열이 아니라 "왜 없는지"를 그 자리에 채운다
 (첨부파일 자체가 없는지 / 다운로드가 실패했는지 / 텍스트 추출이 안 됐는지 / 문서에 해당 문구가 없는지).
 """
 
+import io
+import logging
 import os
 import re
-import shutil
-import subprocess
-import sys
-import tempfile
+import zipfile
+from contextlib import closing
+from xml.etree import ElementTree
 
 import pdfplumber
 from bs4 import BeautifulSoup
+from hwp5.hwp5html import HTMLTransform
+from hwp5.xmlmodel import Hwp5File
 
 FIELDS = ["capital", "record", "patent_no"]
 
-# hwp5html은 pyhwp가 파이썬과 같은 bin 폴더에 설치하는 CLI. venv를 activate하지 않고 서버를
-# 띄우면 PATH에 없어서 모든 HWP가 실패하므로, 현재 인터프리터 옆의 실행파일을 우선 사용한다.
-# (shutil.which는 Windows의 hwp5html.exe 확장자도 처리한다)
-HWP5HTML = shutil.which("hwp5html", path=os.path.dirname(sys.executable)) or "hwp5html"
+# pyhwp는 공고문마다 "undefined UnderlineStyle value" 같은 경고를 대량으로 찍는다 (결과에는 영향 없음)
+logging.getLogger("hwp5").setLevel(logging.ERROR)
 
 # 공고문 표 헤더에 "자 본 금", "실 적"처럼 글자 사이를 띄어 쓰는 관행이 매우 흔해
 # (실제 631개 첨부파일 스캔 결과 자본금 미검출 사례의 대다수가 이 패턴이었음) 글자 사이
@@ -47,7 +48,7 @@ INVISIBLE_CHARS = re.compile(r"[\u200b-\u200d\u2060\ufeff]")
 # "정상"으로 인정할 값의 조건. 키워드가 있는 줄이어도 이 조건을 못 채우면(예: "자본금 증명서 제출",
 # "공법 기술사용 협약서") 요건 값이 아니라고 보고 "확인 필요"로 넘긴다 -> "정상" 행은 믿어도 되게 함.
 CAPITAL_AMOUNT = re.compile(r"\d[\d,.]*\s*(?:억|천\s*만|백\s*만|만)|\d{1,3}(?:,\d{3})+\s*원")
-RECORD_VALUE = re.compile(r"\d+\s*(?:건|회)|\d[\d,.]*\s*(?:억|천\s*만|백\s*만|만)\s*원?")
+RECORD_VALUE = re.compile(r"\d+\s*(?:건|회|개(?!\s*년))|\d[\d,.]*\s*(?:억|천\s*만|백\s*만|만)\s*원?")
 
 DOWNLOAD_FAILED_REASON = "공고문을 확보하지 못해 확인 불가"
 NOT_FOUND_REASON = "공고문 내용에서 해당 항목 관련 문구를 찾지 못함"
@@ -73,29 +74,49 @@ def extract_text(path: str) -> tuple[str, str | None]:
 
     if ext == ".hwp":
         # hwp5txt는 표(table) 안의 텍스트를 "<표>" placeholder로만 남기고 누락시킨다.
-        # 참가자격/실적 요건이 표로 작성된 공고문이 많아, hwp5html로 변환 후 HTML을 파싱해
-        # 표 내용까지 포함한 전체 텍스트를 얻는다.
-        with tempfile.TemporaryDirectory() as tmpdir:
-            try:
-                result = subprocess.run(
-                    [HWP5HTML, "--output", tmpdir, path], capture_output=True, text=True
-                )
-            except FileNotFoundError:
-                return "", "HWP 변환 도구(hwp5html)를 찾지 못함(pyhwp 설치 확인 필요)"
-            if result.returncode != 0:
-                reason = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "알 수 없는 오류"
-                return "", f"HWP 파싱 실패({reason[:100]})"
-            index_path = os.path.join(tmpdir, "index.xhtml")
-            if not os.path.exists(index_path):
-                return "", "HWP에서 텍스트를 추출하지 못함(변환 결과 없음)"
-            with open(index_path, encoding="utf-8") as f:
-                text = BeautifulSoup(f.read(), "html.parser").get_text("\n")
+        # 참가자격/실적 요건이 표로 작성된 공고문이 많아, xhtml로 변환 후 HTML을 파싱해
+        # 표 내용까지 포함한 전체 텍스트를 얻는다. hwp5html CLI를 파일마다 새 프로세스로 띄우면
+        # 파이썬 기동 비용이 커서, 같은 변환을 프로세스 안에서 직접 호출한다 (실측 47개 파일 39초 -> 13초, 결과 동일).
+        buf = io.BytesIO()
+        try:
+            with closing(Hwp5File(path)) as hwp:
+                HTMLTransform().transform_hwp5_to_xhtml(hwp, buf)
+        except Exception as e:
+            return "", f"HWP 파싱 실패({str(e)[:100]})"
+        text = BeautifulSoup(buf.getvalue(), "html.parser").get_text("\n")
         if not text.strip():
             return "", "HWP에서 텍스트를 추출하지 못함"
         return text, None
 
-    # ponytail: .hwpx(OOXML)/.zip 등은 의뢰서 범위(HWP/PDF) 밖 -> 미지원, 필요해지면 zipfile+xml로 추가
+    if ext == ".hwpx":
+        try:
+            return _hwpx_text(path), None
+        except (zipfile.BadZipFile, ElementTree.ParseError, KeyError) as e:
+            return "", f"HWPX 파싱 실패({str(e)[:100]})"
+
+    # ponytail: .zip/.doc 등은 미지원 -> 실제로 나오면 추가
     return "", f"지원하지 않는 첨부파일 형식({ext or '확장자 없음'})이라 텍스트 추출 불가"
+
+
+def _hwpx_text(path: str) -> str:
+    """HWPX(zip 안의 Contents/section*.xml)에서 문단(<hp:p>)마다 한 줄씩 텍스트를 뽑는다.
+    표 셀 안의 문단도 <hp:p>라서 HWP와 마찬가지로 표 내용이 빠지지 않는다."""
+    lines = []
+    with zipfile.ZipFile(path) as z:
+        sections = sorted(n for n in z.namelist() if re.fullmatch(r"Contents/section\d+\.xml", n))
+        for name in sections:
+            parts: list[str] = []
+            for _, el in ElementTree.iterparse(z.open(name)):
+                tag = el.tag.rsplit("}", 1)[-1]
+                if tag == "t":
+                    parts.append("".join(el.itertext()))
+                elif tag == "p":
+                    lines.append("".join(parts))
+                    parts = []
+    text = "\n".join(lines)
+    if not text.strip():
+        raise KeyError("본문 텍스트 없음")
+    return text
 
 
 # "1)", "2.", "가." 처럼 문단 앞에 붙는 번호 매김 표시. 이 안의 숫자는 "값"이 아니므로
@@ -161,6 +182,11 @@ def _find_line(lines: list[str], matches, is_valid, continues_from=None) -> tupl
     return fallback, False
 
 
+def normalize_amount(amount: str) -> str:
+    """"5 억원" -> "5억". 금액 표기의 공백과 "억/만" 뒤의 "원"을 없앤다."""
+    return re.sub(r"(억|만)원$", r"\1", re.sub(r"\s+", "", amount))
+
+
 def parse_requirements(text: str) -> dict:
     """공고문 텍스트에서 자본금/실적/공법번호 요건을 추출.
 
@@ -181,8 +207,10 @@ def parse_requirements(text: str) -> dict:
     # 특허번호는 "공법" 줄과 떨어진 줄(다음 줄 괄호, 제출서류 항목 등)에 적히는 경우가 많아
     # (실제 공고문 7건 중 3건) 키워드 줄이 아니라 문서 전체에서 등록번호 형식을 찾는다.
     numbers = dict.fromkeys(f"{a}-{b}" for a, b in PATENT_NUMBER.findall("\n".join(lines)))
+    patent_evidence = ""
     if numbers:
         patent_no, patent_ok = ", ".join(numbers), True
+        patent_evidence = next(line for line in lines if PATENT_NUMBER.search(line))
     else:
         # 번호 없이 공법 이름만 있는 경우 -> 해당 줄을 "확인 필요"로 보여준다
         patent_no = next(
@@ -196,10 +224,20 @@ def parse_requirements(text: str) -> dict:
         )
         patent_ok = False
 
+    # 문서 안의 자본금 금액이 서로 다르면(예: 3억/5억) 어느 쪽이 요건인지 사람이 봐야 한다
+    capital_amounts = []
+    for line in lines:
+        keyword = CAPITAL_KEYWORD.search(line)
+        amount = keyword and CAPITAL_AMOUNT.search(line, keyword.end())
+        if amount:
+            capital_amounts.append(normalize_amount(amount.group()))
+
     result = {
         "capital": capital, "capital_found": capital_ok,
         "record": record, "record_found": record_ok,
         "patent_no": patent_no, "patent_no_found": patent_ok,
+        "patent_no_evidence": patent_evidence,
+        "capital_amounts": list(dict.fromkeys(capital_amounts)),
     }
     for key, pattern in ABSENCE_CHECK.items():
         result[f"{key}_absent"] = not pattern.search(text)
@@ -212,6 +250,8 @@ def _all_missing(reason: str) -> dict:
     result = dict.fromkeys(FIELDS, reason)
     for f in FIELDS:
         result[f"{f}_found"] = False
+    # 값을 못 찾은 게 아니라 공고문 자체를 못 읽은 경우 -> "수집 실패"로 분류
+    result["extract_failed"] = True
     return result
 
 
@@ -221,6 +261,9 @@ def parse_files(paths: list[str], fetch_error: str | None = None) -> dict:
 
     # 필드별 (값, 조건 만족 여부). 여러 첨부파일 중 조건을 만족하는 값을 우선한다.
     combined: dict[str, tuple[str, bool]] = dict.fromkeys(FIELDS, ("", False))
+    sources = dict.fromkeys(FIELDS, "")
+    patent_evidence = ""
+    capital_amounts: dict[str, None] = {}
     # 모든 첨부파일에 관련 문구가 전혀 없을 때만 "해당 없음" (추출 실패한 파일이 하나라도 있으면 단정 불가)
     absent = dict.fromkeys(FIELDS, True)
     extract_errors: list[str] = []
@@ -233,19 +276,28 @@ def parse_files(paths: list[str], fetch_error: str | None = None) -> dict:
             continue
         any_text_extracted = True
         parsed = parse_requirements(text)
+        capital_amounts.update(dict.fromkeys(parsed["capital_amounts"]))
         for key in FIELDS:
             absent[key] = absent[key] and parsed[f"{key}_absent"]
             value, found = parsed[key], parsed[f"{key}_found"]
             cur_value, cur_found = combined[key]
             if value and (not cur_value or (found and not cur_found)):
                 combined[key] = (value, found)
+                sources[key] = os.path.basename(path)
+                if key == "patent_no":
+                    patent_evidence = parsed["patent_no_evidence"]
 
     if not any_text_extracted:
         reason = "; ".join(extract_errors) if extract_errors else "첨부파일에서 텍스트를 추출하지 못함"
         return _all_missing(reason)
 
-    result = {}
+    result = {
+        "extract_errors": extract_errors,
+        "capital_amounts": list(capital_amounts),
+        "patent_no_evidence": patent_evidence,
+    }
     for key in FIELDS:
+        result[f"{key}_source"] = sources[key]
         value, found = combined[key]
         if found:
             result[key] = value

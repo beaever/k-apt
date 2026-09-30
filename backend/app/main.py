@@ -131,6 +131,9 @@ async def _detail_worker(browser, row_queue: "asyncio.Queue", results: list, job
     """
     context = await browser.new_context(accept_downloads=True)
     detail_page = await context.new_page()
+    # 파싱(PDF/HWP)은 스레드에서 돌리고 기다리지 않은 채 다음 공고 다운로드로 넘어간다
+    # -> 네트워크 대기와 파싱이 겹쳐 워커당 공고 1건 처리 시간이 줄어든다.
+    parse_tasks: list[asyncio.Task] = []
     try:
         await step1_search.establish_session(detail_page)
         while True:
@@ -138,16 +141,12 @@ async def _detail_worker(browser, row_queue: "asyncio.Queue", results: list, job
                 idx, row = row_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
+            detail = None
             for attempt in range(2):
                 try:
                     detail = await step2_download.fetch_detail(
                         detail_page, row["bid_num"], row["has_attachment"], job_dir
                     )
-                    # PDF/HWP 파싱은 동기(CPU/subprocess) 작업이라 이벤트 루프를 막지 않도록 스레드로 넘긴다
-                    parsed = await asyncio.to_thread(
-                        step3_parse.parse_files, detail.get("files", []), detail.get("download_error")
-                    )
-                    results[idx] = {**row, **detail, **parsed, "success": True, "error": ""}
                     break
                 except Exception as e:
                     results[idx] = {**row, "success": False, "error": str(e)}
@@ -155,9 +154,25 @@ async def _detail_worker(browser, row_queue: "asyncio.Queue", results: list, job
                     # ("interrupted by another navigation") 페이지를 새로 만들어 한 번 더 시도한다.
                     await detail_page.close()
                     detail_page = await context.new_page()
-            job["done"] += 1
+            if detail is None:
+                job["done"] += 1
+                continue
+            parse_tasks.append(asyncio.create_task(_parse_and_store(idx, row, detail, results, job)))
     finally:
         await context.close()
+        await asyncio.gather(*parse_tasks)
+
+
+async def _parse_and_store(idx: int, row: dict, detail: dict, results: list, job: dict):
+    try:
+        # PDF/HWP 파싱은 동기(CPU) 작업이라 이벤트 루프를 막지 않도록 스레드로 넘긴다
+        parsed = await asyncio.to_thread(
+            step3_parse.parse_files, detail.get("files", []), detail.get("download_error")
+        )
+        results[idx] = {**row, **detail, **parsed, "success": True, "error": ""}
+    except Exception as e:
+        results[idx] = {**row, **detail, "success": False, "error": f"공고문 분석 중 오류({e})"}
+    job["done"] += 1
 
 
 def _cleanup_old_jobs():
@@ -181,12 +196,12 @@ async def _run_job(job_id: str, req: CollectRequest, job_dir: str):
 
         row_dicts = [step4_excel.to_row_dict(r) for r in results]
         step4_excel.build_excel(row_dicts, os.path.join(job_dir, "result.xlsx"))
-        success_count = sum(1 for rd in row_dicts if rd["상태"] == "정상")
         job.update(
             status="done",
             rows=row_dicts,
-            success_count=success_count,
-            fail_count=len(row_dicts) - success_count,
+            success_count=sum(1 for rd in row_dicts if rd["상태"] == step4_excel.STATUS_OK),
+            check_count=sum(1 for rd in row_dicts if rd["상태"].startswith(step4_excel.STATUS_CHECK)),
+            fail_count=sum(1 for rd in row_dicts if rd["상태"].startswith(step4_excel.STATUS_FAIL)),
         )
     except Exception as e:
         job.update(status="error", message=f"수집 중 오류가 발생했습니다({e})")

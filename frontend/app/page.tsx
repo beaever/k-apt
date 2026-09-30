@@ -45,6 +45,7 @@ export default function Home() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [rows, setRows] = useState<ResultRow[]>([]);
   const [successCount, setSuccessCount] = useState(0);
+  const [checkCount, setCheckCount] = useState(0);
   const [failCount, setFailCount] = useState(0);
   const [errorMsg, setErrorMsg] = useState("");
   const [elapsed, setElapsed] = useState(0);
@@ -121,6 +122,7 @@ export default function Home() {
         setJobId(job_id);
         setRows(job.rows ?? []);
         setSuccessCount(job.success_count ?? 0);
+        setCheckCount(job.check_count ?? 0);
         setFailCount(job.fail_count ?? 0);
         setStatus("done");
         break;
@@ -131,7 +133,8 @@ export default function Home() {
     }
   };
 
-  const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+  // "_근거_자본금" 같은 "_" 키는 컬럼이 아니라 해당 셀에 마우스를 올렸을 때 보여줄 근거
+  const columns = rows.length > 0 ? Object.keys(rows[0]).filter((c) => !c.startsWith("_")) : [];
 
   return (
     <div className="flex min-h-screen justify-center bg-zinc-50 px-4 py-16 dark:bg-black">
@@ -235,9 +238,14 @@ export default function Home() {
             <div className="flex items-center justify-between">
               <p className="text-sm text-black dark:text-zinc-50">
                 정상: <strong>{successCount}</strong>건
+                {checkCount > 0 && (
+                  <>
+                    , 확인 필요: <strong className="text-amber-600 dark:text-amber-400">{checkCount}</strong>건
+                  </>
+                )}
                 {failCount > 0 && (
                   <>
-                    , 실패: <strong className="text-red-600 dark:text-red-400">{failCount}</strong>건
+                    , 수집 실패: <strong className="text-red-600 dark:text-red-400">{failCount}</strong>건
                   </>
                 )}
               </p>
@@ -263,14 +271,17 @@ export default function Home() {
                   </thead>
                   <tbody>
                     {rows.map((row, i) => {
-                      const failed = row["상태"]?.startsWith("실패");
+                      const failed = row["상태"]?.startsWith("수집 실패");
+                      const needsCheck = row["상태"]?.startsWith("확인 필요");
                       return (
                         <tr
                           key={i}
                           className={
                             failed
                               ? "border-t border-red-200 bg-red-50 dark:border-red-900/40 dark:bg-red-950/40"
-                              : "border-t border-black/[.06] dark:border-white/[.08]"
+                              : needsCheck
+                                ? "border-t border-amber-200 bg-amber-50 dark:border-amber-900/40 dark:bg-amber-950/40"
+                                : "border-t border-black/[.06] dark:border-white/[.08]"
                           }
                         >
                           {columns.map((c) =>
@@ -296,7 +307,9 @@ export default function Home() {
                                     "inline-block max-w-[200px] truncate rounded-full px-2 py-0.5 text-[11px] font-medium " +
                                     (failed
                                       ? "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300"
-                                      : "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300")
+                                      : needsCheck
+                                        ? "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300"
+                                        : "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300")
                                   }
                                 >
                                   {row[c] || "-"}
@@ -305,8 +318,11 @@ export default function Home() {
                             ) : (
                               <td
                                 key={c}
-                                className="max-w-[220px] truncate px-3 py-2 text-zinc-700 dark:text-zinc-300"
-                                title={row[c]}
+                                className={
+                                  "max-w-[220px] truncate px-3 py-2 text-zinc-700 dark:text-zinc-300" +
+                                  (row[`_근거_${c}`] ? " cursor-help underline decoration-dotted" : "")
+                                }
+                                title={row[`_근거_${c}`] ?? row[c]}
                               >
                                 {row[c] || "-"}
                               </td>

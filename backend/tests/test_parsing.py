@@ -107,6 +107,31 @@ def test_hwp_table_content_extracted():
     assert "10-2767595" in result["patent_no"], result
 
 
+def test_hwpx_text_includes_table_cells():
+    """HWPX: zip 안 section XML의 문단/표 셀 텍스트를 줄 단위로 뽑아 요건을 찾는다."""
+    import zipfile
+
+    hp = 'xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"'
+    xml = (
+        f'<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" {hp}>'
+        "<hp:p><hp:run><hp:t>5. 참가자격</hp:t></hp:run></hp:p>"
+        "<hp:p><hp:run><hp:tbl><hp:tr><hp:tc><hp:subList>"
+        "<hp:p><hp:run><hp:t>다. 자본금 </hp:t><hp:t>5억 이상인 업체</hp:t></hp:run></hp:p>"
+        "<hp:p><hp:run><hp:t>라. 최근 5년간 실적 5건 이상</hp:t></hp:run></hp:p>"
+        "</hp:subList></hp:tc></hp:tr></hp:tbl></hp:run></hp:p>"
+        "</hs:sec>"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "공고문.hwpx")
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr("Contents/section0.xml", xml)
+        text, err = extract_text(path)
+    assert err is None, err
+    result = parse_requirements(text)
+    assert "자본금 5억 이상" in result["capital"] and result["capital_found"], result
+    assert result["record_found"], result
+
+
 def _complete_row():
     return {
         "success": True,
@@ -137,8 +162,44 @@ def test_row_status_fail_when_a_field_is_reason_not_value():
     row["capital"] = "공고문 내용에서 해당 항목 관련 문구를 찾지 못함"
     row["capital_found"] = False
     result = to_row_dict(row)
-    assert result["상태"].startswith("실패"), result
+    assert result["상태"].startswith("확인 필요"), result
     assert "자본금" in result["상태"], result
+
+
+def test_row_status_tiers_and_evidence():
+    """공고문을 못 읽으면 "수집 실패", 값이 의심스러우면 "확인 필요", 근거 문장과 파일명은 따로 넘긴다."""
+    import app.parser.step3_parse as p3
+
+    row = {**_complete_row(), **p3._all_missing("a.pdf: 스캔 PDF")}
+    assert to_row_dict(row)["상태"].startswith("수집 실패"), row
+
+    row = _complete_row()
+    row.update(capital_source="공고문.hwp", capital_amounts=["3억", "5억"])
+    result = to_row_dict(row)
+    assert result["상태"].startswith("확인 필요") and "3억, 5억" in result["상태"], result
+    assert result["_근거_자본금"] == "근거: 자본금 5억 이상인 업체\n파일: 공고문.hwp", result
+
+    row = _complete_row()
+    row["capital"] = "자본금 500억 이상"
+    assert "범위" in to_row_dict(row)["상태"]
+
+
+def test_row_values_are_summarized():
+    """공고일자는 날짜만, 아파트명은 "(입대의)" 제거, 자본금/실적은 핵심 수치만."""
+    row = _complete_row()
+    row.update(
+        announce_date="2026-09-03 16:31:01",
+        apt_name="더힐포레(3단지) (입대의)",
+        capital="4) 자본금 : 5억원 이상인 업체",
+        record="라. 사업실적: 입찰공고일 현재 최근5년간 동일공사 500세대 이상 실적5건 이상인 업체",
+    )
+    result = to_row_dict(row)
+    assert result["공고일자"] == "2026-09-03", result
+    assert result["아파트명"] == "더힐포레(3단지)", result
+    assert result["자본금"] == "5억", result
+    assert result["실적"] == "500세대 5건", result
+    row["record"] = "3) 사업실적 : 공고일로부터 최근 5년간 해당 면허 공사 완료 실적 5건 이상인 업체"
+    assert to_row_dict(row)["실적"] == "5년 5건"
 
 
 def test_unique_path_does_not_overwrite_same_filename():

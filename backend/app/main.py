@@ -3,6 +3,7 @@ import os
 import shutil
 import time
 import uuid
+from concurrent.futures import ProcessPoolExecutor
 from datetime import date
 
 from fastapi import FastAPI, HTTPException
@@ -35,6 +36,19 @@ STORAGE_TTL_SEC = 24 * 3600
 
 # 무료 호스팅은 메모리가 적어 동시 크로미움 컨텍스트 수를 줄여야 할 수 있음.
 DETAIL_CONCURRENCY = int(os.environ.get("DETAIL_CONCURRENCY", "5"))
+
+# PDF/HWP 파싱은 순수 파이썬 CPU 작업이라 스레드로 돌리면 GIL을 잡고 있어 크롤링(이벤트 루프)까지 느려진다
+# (실측: 공고 1건 처리가 단독 0.3초 -> 파싱과 동시 실행 시 수 초). 별도 프로세스에서 돌린다.
+# 무료 호스팅은 메모리가 적어 PARSE_PROCESSES로 줄일 수 있음 (프로세스당 약 100MB).
+PARSE_PROCESSES = int(os.environ.get("PARSE_PROCESSES", str(min(4, os.cpu_count() or 1))))
+_parse_pool: ProcessPoolExecutor | None = None
+
+
+def _get_parse_pool() -> ProcessPoolExecutor:
+    global _parse_pool
+    if _parse_pool is None:
+        _parse_pool = ProcessPoolExecutor(max_workers=PARSE_PROCESSES)
+    return _parse_pool
 
 # 수집은 수 분~수십 분 걸려 HTTP 요청 하나로 기다리면 브라우저/프록시가 먼저 끊는다.
 # 백그라운드 작업으로 돌리고 프런트는 상태를 폴링한다.
@@ -124,9 +138,8 @@ async def run_collect(
 async def _detail_worker(browser, row_queue: "asyncio.Queue", results: list, job_dir: str, job: dict):
     """워커마다 독립된 브라우저 컨텍스트(별도 세션/쿠키)를 발급받아 큐를 처리.
 
-    한 세션(컨텍스트)을 여러 탭이 공유하면 동시에 서로 다른 공고의 첨부파일
-    목록을 요청할 때 서버 세션 쪽에서 뒤섞여 다운로드가 누락되는 경우가 있어,
-    워커별로 완전히 분리된 세션을 쓰도록 함. K-apt에 과도한 동시 요청을 보내지
+    K-apt 상세/첨부는 컨텍스트의 HTTP 요청으로, 외부 대행사 원문은 같은 컨텍스트의 브라우저 탭으로
+    처리한다. 서버 세션에 공고별 상태(첨부 위젯 등)가 섞이지 않도록 워커별로 분리된 세션을 쓴다. K-apt에 과도한 동시 요청을 보내지
     않도록 워커 수는 DETAIL_CONCURRENCY로 제한.
     """
     context = await browser.new_context(accept_downloads=True)
@@ -165,9 +178,8 @@ async def _detail_worker(browser, row_queue: "asyncio.Queue", results: list, job
 
 async def _parse_and_store(idx: int, row: dict, detail: dict, results: list, job: dict):
     try:
-        # PDF/HWP 파싱은 동기(CPU) 작업이라 이벤트 루프를 막지 않도록 스레드로 넘긴다
-        parsed = await asyncio.to_thread(
-            step3_parse.parse_files, detail.get("files", []), detail.get("download_error")
+        parsed = await asyncio.get_running_loop().run_in_executor(
+            _get_parse_pool(), step3_parse.parse_files, detail.get("files", []), detail.get("download_error")
         )
         results[idx] = {**row, **detail, **parsed, "success": True, "error": ""}
     except Exception as e:

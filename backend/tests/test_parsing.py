@@ -30,7 +30,24 @@ def test_a2p_layout_winner():
     detail = _parse_detail_html(html)
     assert detail["winner"] == "주식회사 신광건설", detail
     assert detail["apt_name"] == "광교쌍용포레듀엔1단지", detail
-    assert detail["household_count"] == "7", detail
+    # K-apt에는 동수 421 / 세대수 7로 뒤바뀌어 등록된 공고 (a2p 원문 기준 세대수 421)
+    assert detail["household_count"] == "421", detail
+
+
+def test_household_count_validation():
+    from app.crawler.step2_download import _household_count
+
+    assert _household_count("33", "2328") == "2328"
+    assert _household_count("700", "5") == "700"  # 뒤바뀐 값
+    assert _household_count("0", "0") == ""  # 미등록 -> 확인 필요
+
+
+def test_safe_filename_strips_path():
+    from app.crawler.step2_download import _safe_filename
+
+    assert _safe_filename("../../etc/공고문.hwp", "x") == "공고문.hwp"
+    assert _safe_filename("..\\a\\b.pdf", "x") == "b.pdf"
+    assert _safe_filename("", "123.bin") == "123.bin"
 
 
 def test_kapt_native_layout_winner():

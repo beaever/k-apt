@@ -206,6 +206,8 @@ async def _run_job(job_id: str, req: CollectRequest, job_dir: str):
             job.update(status="error", message="검색 결과가 없습니다.")
             return
 
+        # 표시용 공고일자는 날짜만 남으므로, 같은 날짜도 시각순이 되도록 변환 전 원본 일시로 정렬
+        results.sort(key=lambda r: r.get("announce_date", ""))
         row_dicts = [step4_excel.to_row_dict(r) for r in results]
         step4_excel.build_excel(row_dicts, os.path.join(job_dir, "result.xlsx"))
         job.update(

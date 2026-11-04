@@ -1,9 +1,9 @@
-fastapi
-uvicorn[standard]
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
 playwright==1.62.0
-pdfplumber
-pyhwp
-six
-beautifulsoup4
-openpyxl
-python-multipart
+pdfplumber==0.11.10
+pyhwp==0.1b15
+six==1.17.0
+beautifulsoup4==4.15.0
+openpyxl==3.1.5
+python-multipart==0.0.32

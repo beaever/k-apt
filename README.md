@@ -31,6 +31,8 @@
 
 ```
 kapt-asphalt-collector/
+  launcher.py              # 더블클릭 실행기: 자동 업데이트 -> 부품 설치 -> 서버 실행 -> 브라우저 열기
+  start.bat / start.command # Windows / macOS 더블클릭 파일 (launcher.py 호출)
   backend/
     app/
       main.py              # FastAPI 앱, /api/collect(작업 시작) · /api/collect/{id}(상태 조회) 엔드포인트
@@ -45,25 +47,15 @@ kapt-asphalt-collector/
     requirements.txt
     tests/
       test_parsing.py      # 파싱 로직 자체 점검 스크립트
+      test_launcher.py     # 실행기 업데이트 로직 자체 점검 스크립트
   frontend/
     app/page.tsx            # 검색 폼 + 진행 상태 + 결과 표 + 엑셀 다운로드 버튼
 ```
 
 ## 내 컴퓨터에서 사용하기 (비개발자용 안내)
 
-개발 지식이 없어도 아래 순서대로 **복사 → 붙여넣기 → 엔터**만 하면 됩니다.
-처음 한 번만 하는 "설치"와, 쓸 때마다 하는 "실행"으로 나뉩니다.
-
-> macOS 기준으로 확인한 절차입니다. Windows는 명령어가 다른 곳만 따로 적어두었습니다.
-
-### 용어 3개만 알고 가기
-
-- **터미널**: 글자로 컴퓨터에 명령을 내리는 창입니다.
-  - macOS: `⌘ + Space` → "터미널" 입력 → 엔터
-  - Windows: 시작 메뉴 → "PowerShell" 검색 → 실행
-- **명령어 붙여넣기**: 아래 회색 상자 안의 글자를 복사해 터미널에 붙여넣고 엔터를 누릅니다.
-  줄이 여러 개면 한 줄씩 넣어도 되고 한꺼번에 넣어도 됩니다.
-- **프로그램 끄기**: 실행 중인 터미널 창에서 `Ctrl + C` 를 누릅니다.
+개발 지식이 없어도 쓸 수 있습니다. 처음 한 번만 프로그램 2개를 설치하고, 그다음부터는 **실행 파일을 더블클릭**하면 됩니다.
+터미널에 명령어를 입력하거나 주소를 복사할 필요가 없습니다.
 
 ### 1단계. 필요한 프로그램 설치 (처음 한 번만)
 
@@ -71,17 +63,8 @@ kapt-asphalt-collector/
 
 | 프로그램 | 받는 곳 | 비고 |
 |---|---|---|
-| Python | https://www.python.org/downloads/ | 노란 "Download Python" 버튼. **Windows는 설치 첫 화면에서 "Add python.exe to PATH" 체크 필수** |
+| Python (3.12 이상) | https://www.python.org/downloads/ | 노란 "Download Python" 버튼. **Windows는 설치 첫 화면에서 "Add python.exe to PATH" 체크 필수** |
 | Node.js | https://nodejs.org/ | "LTS"라고 적힌 버튼 |
-
-설치 확인: 터미널을 **새로 열고** 아래를 입력했을 때 버전 숫자가 나오면 성공입니다.
-
-```bash
-python3 --version
-node --version
-```
-
-(Windows는 `python3` 대신 `python --version`)
 
 ### 2단계. 프로젝트 파일 받기 (처음 한 번만)
 
@@ -91,77 +74,33 @@ node --version
 
 > git을 쓸 줄 안다면 `git clone https://github.com/beaever/k-apt.git` 로 받아도 됩니다.
 
-### 3단계. 설치 명령 실행 (처음 한 번만, 5~10분)
+### 3단계. 더블클릭으로 실행하기 (쓸 때마다)
 
-터미널을 열고 아래를 붙여넣습니다. 인터넷에서 필요한 부품과 크롬 브라우저 엔진을 내려받습니다.
+`k-apt` 폴더 안의 파일을 더블클릭합니다. 바로가기(별칭)를 바탕화면에 만들어 두면 더 편합니다.
 
-**macOS**
+- **Windows**: `start.bat`
+- **macOS**: `start.command`
 
-```bash
-cd ~/Desktop/k-apt/backend
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-playwright install chromium
-cd ../frontend
-npm install
-```
+새 창이 열리고 아래 순서로 자동 진행된 뒤 **브라우저에 검색 화면이 열립니다**.
 
-**Windows (PowerShell)**
+1. 새 버전이 있으면 적용합니다.
+2. 처음이거나 부품이 바뀌었으면 설치합니다. (처음에는 5~10분)
+3. 프로그램을 켜고 브라우저를 엽니다.
 
-```powershell
-cd ~\Desktop\k-apt\backend
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-playwright install chromium
-cd ..\frontend
-npm install
-```
+**다 쓰면 그 창을 닫으면 프로그램도 꺼집니다.** 사용 중에는 창을 닫지 마세요.
 
-- 글자가 많이 올라가는 건 정상입니다. 마지막에 다시 입력 대기 상태가 되면 끝난 것입니다.
-- Windows에서 `venv\Scripts\activate` 가 "스크립트를 실행할 수 없습니다" 오류를 내면,
-  `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` 를 입력하고 `Y` 를 누른 뒤 다시 시도하세요.
+> 처음 실행할 때 보안 경고가 나올 수 있습니다.
+> - Windows "PC 보호" 창: **추가 정보** → **실행**
+> - macOS "열 수 없음" 창: **시스템 설정 → 개인정보 보호 및 보안** 맨 아래의 **그래도 열기**
 
-### 4단계. 실행하기 (쓸 때마다)
-
-**터미널 창 2개**가 필요합니다. 둘 다 켜둔 상태로 사용하고, 창을 닫으면 프로그램도 꺼집니다.
-
-**창 ① — 수집 서버** (공고 검색/다운로드/분석 담당)
-
-```bash
-cd ~/Desktop/k-apt/backend
-source venv/bin/activate
-uvicorn app.main:app --host 127.0.0.1 --port 8420
-```
-
-(Windows: 두 번째 줄을 `venv\Scripts\activate` 로)
-
-`Application startup complete.` 가 보이면 준비 완료입니다.
-
-**창 ② — 화면** (새 터미널 창을 하나 더 열어서)
-
-```bash
-cd ~/Desktop/k-apt/frontend
-npm run dev
-```
-
-`Ready` 가 보이면 준비 완료입니다.
-
-**브라우저(크롬 등)에서 http://localhost:3000 접속** → 검색 화면이 나옵니다.
-
-> 주소는 꼭 `localhost` 로 입력하세요. `127.0.0.1:3000` 으로 들어가면 화면이 계속 새로고침될 수 있습니다.
-
-다 쓰고 나면 두 터미널 창에서 각각 `Ctrl + C` 를 누르거나 창을 닫으면 됩니다.
-
-### 5단계. 사용하기
+### 4단계. 사용하기
 
 1. 지역(서울/인천/경기)을 체크합니다.
 2. 검색어를 입력합니다. (예: "아스콘")
 3. 기간을 고릅니다. 빠른 선택(1주일/1개월/1년) 버튼을 눌러도 됩니다. (최대 1년)
 4. **검색 시작**을 누릅니다.
    - 진행 상황("12/40건")이 표시됩니다. 1개월치 기준 수 분, 1년치는 수십 분 걸릴 수 있습니다.
-   - 진행 중에는 브라우저 탭을 닫지 마세요. (수집 서버 창 ①도 켜둔 채로)
+   - 진행 중에는 브라우저 탭을 닫지 마세요. (실행 창도 켜둔 채로)
 5. 끝나면 결과 표와 정상 / 확인 필요 / 수집 실패 건수가 나오고, **엑셀 다운로드** 버튼으로 파일을 받을 수 있습니다.
    (브라우저의 기본 다운로드 폴더에 저장됩니다)
 
@@ -178,47 +117,12 @@ npm run dev
 어느 문장·파일에서 뽑았는지는 **엑셀 셀 메모**(셀 모서리의 빨간 삼각형, 마우스를 올리면 보임)와
 화면 표의 **점선 밑줄 칸**에 마우스를 올리면 볼 수 있습니다.
 
-### 새 버전 받아서 확인하기 (업데이트될 때마다)
+### 새 버전 받기
 
-GitHub에 새 기능이 반영(머지)되면, 내 컴퓨터의 프로그램은 자동으로 바뀌지 않습니다.
-아래 순서대로 새 버전으로 바꾼 뒤 확인하세요. **이미 1~3단계를 한 번 해본 컴퓨터** 기준입니다.
+**따로 할 일이 없습니다.** 실행 파일을 더블클릭할 때마다 새 버전을 확인해 자동으로 적용합니다.
+이미 켜 둔 상태라면 창을 닫고 다시 실행하면 됩니다. 인터넷이 끊겼거나 업데이트에 실패하면 지금 버전으로 그대로 실행됩니다.
 
-**① 켜져 있는 프로그램 끄기**
-
-창 ①, 창 ② 터미널에서 각각 `Ctrl + C` 를 누르거나 창을 닫습니다.
-
-**② 새 버전 파일 받기**
-
-1. 바탕화면의 기존 `k-apt` 폴더 이름을 `k-apt-이전` 으로 바꿉니다. (문제가 생기면 되돌릴 수 있도록 바로 지우지 않습니다)
-2. https://github.com/beaever/k-apt 접속 → 초록색 **Code** 버튼 → **Download ZIP**
-3. 압축을 풀고 폴더 이름을 `k-apt` 로 바꿔 **바탕화면** 에 둡니다. (2단계와 같음)
-
-> git으로 받았다면 ②, ③ 대신 `cd ~/Desktop/k-apt && git pull` 후 ③만 하면 됩니다.
-
-**③ 설치 명령 다시 실행 (5~10분)**
-
-새로 받은 폴더에는 설치된 부품이 없으므로 **3단계의 명령을 그대로 한 번 더** 붙여넣습니다.
-(Python·Node.js 프로그램 자체는 다시 설치하지 않아도 됩니다)
-
-**④ 자동 점검 돌려보기 (1분)**
-
-프로그램 핵심 기능(공고문 읽기, 값 정리, 상태 판정)이 정상인지 스스로 검사하는 명령입니다.
-
-```bash
-cd ~/Desktop/k-apt/backend
-source venv/bin/activate
-python tests/test_parsing.py
-```
-
-(Windows: 첫 줄은 `cd ~\Desktop\k-apt\backend`, 두 번째 줄은 `venv\Scripts\activate`, 세 번째 줄은 `python tests\test_parsing.py`)
-
-마지막 줄에 **`모두 통과 (N개)`** 가 나오면 성공입니다.
-`AssertionError` 나 `Error` 가 보이면 화면 전체를 캡처해서 개발 담당자에게 전달하세요.
-
-**⑤ 실행해서 직접 확인하기**
-
-4단계대로 창 ①, 창 ② 를 켜고 http://localhost:3000 에서 **기간 1개월**로 검색해 봅니다.
-결과가 나오면 아래 항목을 확인합니다.
+새 버전을 확인할 때는 **기간 1개월**로 검색해 아래 항목을 봅니다.
 
 | 확인할 것 | 정상이라면 |
 |---|---|
@@ -231,23 +135,33 @@ python tests/test_parsing.py
 | 엑셀 자본금 칸 모서리 빨간 삼각형 | 마우스를 올리면 근거 문장 메모가 보임 |
 | 엑셀 노란/빨간 줄의 아파트명 | 누르면 K-apt 원문 페이지가 열림 |
 
-**⑥ 문제 없으면 이전 폴더 지우기**
-
-며칠 써보고 문제가 없으면 `k-apt-이전` 폴더는 지워도 됩니다.
-새 버전에 문제가 있으면 `k-apt` 폴더를 지우고 `k-apt-이전` 의 이름을 다시 `k-apt` 로 바꾸면 예전 버전으로 돌아갑니다.
-
 ### 자주 묻는 문제
 
 | 증상 | 해결 |
 |---|---|
-| `command not found: python3` / `node` | 1단계 설치 후 **터미널을 완전히 닫았다 다시** 열기 |
+| "Python이 없습니다" / "Python 3.12 이상이 필요합니다" | 1단계대로 설치하고 PC를 재시작한 뒤 다시 실행 |
+| "Node.js가 없습니다" | 1단계대로 설치하고 PC를 재시작한 뒤 다시 실행 |
 | 설치 중 `[notice] A new release of pip is available` | 오류 아님. 무시하면 됨 |
-| `No such file or directory` (cd 할 때) | 2단계에서 폴더 이름이 `k-apt` 이고 바탕화면에 있는지 확인 |
-| `address already in use` | 이미 켜진 창이 있다는 뜻. 기존 터미널 창을 닫고 다시 실행 |
+| "다른 프로그램이 ○○번 포트를 쓰고 있습니다" | 다른 실행 창이 남아 있는지 확인해 닫거나 PC 재시작 |
 | 화면에서 "다른 수집 작업이 진행 중입니다" | 한 번에 하나만 수집 가능. 진행 중인 작업이 끝날 때까지 기다리기 |
-| 화면에서 "요청 실패" / 아무 반응 없음 | 창 ① 수집 서버가 켜져 있는지 확인 |
+| 화면에서 "요청 실패" / 아무 반응 없음 | 실행 창이 켜져 있는지 확인. 닫혔다면 다시 더블클릭 |
+| 오류가 나서 원인을 모르겠음 | 창 내용을 캡처하고 `.launcher` 폴더의 `backend.log`, `frontend.log` 를 담당자에게 전달 |
 | 화면에서 "수집 중 오류가 발생했습니다" | K-apt 사이트가 일시적으로 느린 경우가 많음. 잠시 후 다시 시도 |
 | 전에 받은 엑셀을 다시 받으려는데 안 됨 | 결과 파일은 24시간 뒤 자동 삭제됨. 다시 검색 |
+
+### 개발자용: 새 버전 배포
+
+`main`에 머지해도 사용자에게는 전달되지 않고, **GitHub Release를 만들어야** 다음 실행 때 적용됩니다.
+
+```bash
+gh release create v1.0.0 --target main --generate-notes
+```
+
+문제가 있는 버전을 되돌리려면 그 Release를 지우면 됩니다. 실행기는 최신 Release와 버전이 다르면 그 버전으로 맞추므로,
+다음 실행 때 직전 Release로 돌아갑니다. 부품 호환성을 위해 `requirements.txt`의 버전은 고정해서 관리합니다.
+
+`.git` 폴더가 있는 개발 폴더에서는 실행기가 업데이트를 건너뛰어 작업 중인 코드를 덮어쓰지 않습니다.
+업데이트 로직 점검: `python3 backend/tests/test_launcher.py`
 
 ### 개발자용 실행 요약
 

@@ -1,6 +1,10 @@
 # macOS
 .DS_Store
 
+# 실행기 상태/로그
+.launcher/
+__pycache__/
+
 # backend (Python)
 backend/venv/
 backend/**/__pycache__/

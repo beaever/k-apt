@@ -9,13 +9,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import launcher
 
+COMMIT = "a" * 40
 FILES = {name: "new" for name in (*launcher.REQUIRED_FILES, "start.command", "backend/app/new.py")}
 
 
 def _make_zip(path: str, files: dict[str, str]) -> None:
     with zipfile.ZipFile(path, "w") as z:
         for name, content in files.items():
-            z.writestr(f"k-apt-v2/{name}", content)
+            z.writestr(f"k-apt-abc123/{name}", content)
 
 
 def _write(root: str, name: str, content: str = "old") -> str:
@@ -31,7 +32,7 @@ def _read(path: str) -> str:
         return f.read()
 
 
-def test_apply_release_replaces_code_and_keeps_user_data():
+def test_apply_update_replaces_code_and_keeps_user_data():
     with tempfile.TemporaryDirectory() as tmp:
         root, zip_path = os.path.join(tmp, "app"), os.path.join(tmp, "r.zip")
         _make_zip(zip_path, FILES)
@@ -42,30 +43,42 @@ def test_apply_release_replaces_code_and_keeps_user_data():
         unknown = _write(root, "내 메모.txt")
         state = {"version": "v1", "files": ["backend/app/main.py", "backend/app/removed.py"]}
 
-        launcher.apply_release(zip_path, root, "v2", state)
+        launcher.apply_update(zip_path, root, COMMIT, state)
 
         assert _read(main_py) == "new"
         assert os.path.exists(os.path.join(root, "backend/app/new.py"))
         assert not os.path.exists(removed), "새 버전에서 사라진 파일은 지워져야 함"
         for kept in (venv_file, result_file, unknown):
             assert _read(kept) == "old", kept
-        assert state["version"] == "v2" and "backend/app/new.py" in state["files"]
+        assert state["version"] == COMMIT and "backend/app/new.py" in state["files"]
         if os.name != "nt":
             assert os.access(os.path.join(root, "start.command"), os.X_OK)
 
 
-def test_apply_release_rejects_wrong_zip_without_touching_files():
+def test_apply_update_rejects_wrong_zip_without_touching_files():
     with tempfile.TemporaryDirectory() as tmp:
         root, zip_path = os.path.join(tmp, "app"), os.path.join(tmp, "r.zip")
         _make_zip(zip_path, {"README.md": "x"})
         main_py = _write(root, "backend/app/main.py")
         state = {"version": "v1"}
         try:
-            launcher.apply_release(zip_path, root, "v2", state)
+            launcher.apply_update(zip_path, root, COMMIT, state)
         except ValueError:
             assert _read(main_py) == "old" and state == {"version": "v1"}
             return
         raise AssertionError("잘못된 압축 파일이 적용되면 안 됨")
+
+
+def test_latest_commit_rejects_unexpected_response():
+    original = launcher.curl
+    launcher.curl = lambda *args, **kwargs: b"<html>error</html>"
+    try:
+        launcher.latest_commit()
+    except ValueError:
+        return
+    finally:
+        launcher.curl = original
+    raise AssertionError("커밋 해시가 아닌 응답은 거부해야 함")
 
 
 def test_failed_update_keeps_current_version():

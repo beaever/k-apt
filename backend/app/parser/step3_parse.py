@@ -39,9 +39,14 @@ RECENT_YEARS = re.compile(r"최근\s*\d+\s*년")
 # 않는다 (특허 대신 "신기술 지정", "실용신안"으로 요건을 거는 공고 대비).
 ABSENCE_CHECK = {
     "capital": CAPITAL_KEYWORD,
-    "record": re.compile(r"실\s*적|최근\s*\d+\s*년간"),
+    # "최근 1년간 행정처분 확인서"는 대부분의 공고문에 있는 제출서류라 실적 요건의 단서가 아니다
+    "record": re.compile(r"실\s*적|최근\s*\d+\s*년간(?!\s*행\s*정\s*처\s*분)"),
     "patent_no": re.compile(r"특\s*허|공\s*법|신\s*기\s*술|실\s*용\s*신\s*안|[12]0\s*-\s*\d{7}"),
 }
+# K-apt에 세대수가 없는 공고의 보완용 ("단지규모 : 8개동 407세대", "세대수 588세대"). "500세대 이상"은 실적 요건이라 제외.
+NOTICE_HOUSEHOLD = re.compile(
+    r"(?:단\s*지\s*규\s*모[^\n]{0,40}?|세\s*대\s*수\s*:?\s*)(\d[\d,]*)\s*세\s*대(?!\s*이\s*상)"
+)
 # PDF 추출 텍스트에 섞이는 폭 없는 문자(예: "5\u2060억"). 정규식 매칭을 깨뜨리므로 제거한다.
 INVISIBLE_CHARS = re.compile(r"[\u200b-\u200d\u2060\ufeff]")
 
@@ -233,7 +238,9 @@ def parse_requirements(text: str) -> dict:
         if amount:
             capital_amounts.append(normalize_amount(amount.group()))
 
+    household = NOTICE_HOUSEHOLD.search(text)
     result = {
+        "notice_household": household.group(1).replace(",", "") if household else "",
         "capital": capital, "capital_found": capital_ok,
         "record": record, "record_found": record_ok,
         "patent_no": patent_no, "patent_no_found": patent_ok,
@@ -264,6 +271,7 @@ def parse_files(paths: list[str], fetch_error: str | None = None) -> dict:
     combined: dict[str, tuple[str, bool]] = dict.fromkeys(FIELDS, ("", False))
     sources = dict.fromkeys(FIELDS, "")
     patent_evidence = ""
+    notice_household = notice_household_source = ""
     capital_amounts: dict[str, None] = {}
     # 모든 첨부파일에 관련 문구가 전혀 없을 때만 "해당 없음" (추출 실패한 파일이 하나라도 있으면 단정 불가)
     absent = dict.fromkeys(FIELDS, True)
@@ -278,6 +286,9 @@ def parse_files(paths: list[str], fetch_error: str | None = None) -> dict:
         any_text_extracted = True
         parsed = parse_requirements(text)
         capital_amounts.update(dict.fromkeys(parsed["capital_amounts"]))
+        if parsed["notice_household"] and not notice_household:
+            notice_household = parsed["notice_household"]
+            notice_household_source = os.path.basename(path)
         for key in FIELDS:
             absent[key] = absent[key] and parsed[f"{key}_absent"]
             value, found = parsed[key], parsed[f"{key}_found"]
@@ -296,6 +307,8 @@ def parse_files(paths: list[str], fetch_error: str | None = None) -> dict:
         "extract_errors": extract_errors,
         "capital_amounts": list(capital_amounts),
         "patent_no_evidence": patent_evidence,
+        "notice_household": notice_household,
+        "notice_household_source": notice_household_source,
     }
     for key in FIELDS:
         result[f"{key}_source"] = sources[key]

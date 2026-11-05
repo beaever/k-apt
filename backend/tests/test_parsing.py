@@ -108,6 +108,35 @@ def test_absent_requirement_is_not_applicable_but_unextractable_file_is_not():
             p3.extract_text = orig
 
 
+def test_disciplinary_notice_is_not_a_record_requirement():
+    """"최근 1년간 행정처분 확인서"만 있으면 실적 요건이 없는 공고다. 다른 "최근 N년간"은 단정하지 않는다."""
+    assert parse_requirements("입찰공고일 전일 기준 최근 1년간\n행정처분 확인서 1부")["record_absent"]
+    assert not parse_requirements("최근 3년간 시공 경험이 있는 업체")["record_absent"]
+
+
+def test_household_from_notice():
+    """공고문의 단지규모에서 세대수를 읽고, 실적 요건의 세대수는 무시한다."""
+    cases = {
+        "다. 단지규모 : 8개동 407세대": "407",
+        "라. 단지규모 : 2 개동  103 세대": "103",
+        "단지규모 : 2,646세대 28개동": "2646",
+        "나. 연면적 및 규모 : 연면적 73,025.014㎡ / 세대수 588세대": "588",
+        "최근 5년간 공동주택 500세대 이상 실적 5건": "",
+        "세대수 500세대 이상 실적 5건": "",
+    }
+    for text, expected in cases.items():
+        assert parse_requirements(text)["notice_household"] == expected, text
+
+
+def test_kapt_household_wins_and_notice_value_is_marked():
+    """K-apt 값을 우선하고, 공고문 값을 쓸 때만 출처를 근거로 남긴다."""
+    base = {"bid_num": "1", "notice_household": "407", "notice_household_source": "공고문.hwp"}
+    row = to_row_dict(base)
+    assert row["세대수"] == "407" and "공고문.hwp" in row["_근거_세대수"]
+    row = to_row_dict({**base, "household_count": "410"})
+    assert row["세대수"] == "410" and "_근거_세대수" not in row
+
+
 def test_hwp_table_content_extracted():
     """실제 K-apt 공고문 hwp: 참가자격(자본금/실적/특허)이 표 안에 들어있는 경우.
 

@@ -134,7 +134,7 @@ def to_row_dict(r: dict) -> dict:
         "공고일자": r.get("announce_date", "")[:10],
         "아파트명": APT_SUFFIX.sub("", r.get("apt_name") or r.get("apt_name_list", "")),
         "공사명": r.get("work_name") or r.get("bid_title", ""),
-        "세대수": r.get("household_count", ""),
+        "세대수": r.get("household_count") or r.get("notice_household", ""),
         "자본금": capital,
         "실적": record,
         "공법번호": r.get("patent_no", ""),
@@ -168,6 +168,8 @@ def to_row_dict(r: dict) -> dict:
     for col, key in PARSED_FIELDS.items():
         if evidence := _evidence(r, key):
             values[EVIDENCE_KEY + col] = evidence
+    if not r.get("household_count") and r.get("notice_household"):
+        values[EVIDENCE_KEY + "세대수"] = f"K-apt에 세대수가 없어 공고문에서 읽은 값\n파일: {r.get('notice_household_source', '')}"
     return values
 
 
@@ -181,7 +183,7 @@ def build_excel(row_dicts: list[dict], out_path: str) -> None:
     for row_dict in row_dicts:
         ws.append([row_dict[c] for c in COLUMNS])
         row_no = ws.max_row
-        for col in PARSED_FIELDS:
+        for col in (*PARSED_FIELDS, "세대수"):
             if evidence := row_dict.get(EVIDENCE_KEY + col):
                 cell = ws.cell(row=row_no, column=COLUMNS.index(col) + 1)
                 cell.comment = Comment(evidence, "수집기", width=400, height=120)

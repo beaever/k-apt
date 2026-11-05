@@ -5,6 +5,7 @@ import time
 import uuid
 from concurrent.futures import ProcessPoolExecutor
 from datetime import date
+from multiprocessing import get_context
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -47,7 +48,8 @@ _parse_pool: ProcessPoolExecutor | None = None
 def _get_parse_pool() -> ProcessPoolExecutor:
     global _parse_pool
     if _parse_pool is None:
-        _parse_pool = ProcessPoolExecutor(max_workers=PARSE_PROCESSES)
+        # Linux 기본값 fork는 Playwright 연결을 물려받아 수집 종료 단계에서 멈춘다
+        _parse_pool = ProcessPoolExecutor(max_workers=PARSE_PROCESSES, mp_context=get_context("spawn"))
     return _parse_pool
 
 # 수집은 수 분~수십 분 걸려 HTTP 요청 하나로 기다리면 브라우저/프록시가 먼저 끊는다.

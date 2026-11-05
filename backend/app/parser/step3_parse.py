@@ -106,13 +106,14 @@ def _hwpx_text(path: str) -> str:
         sections = sorted(n for n in z.namelist() if re.fullmatch(r"Contents/section\d+\.xml", n))
         for name in sections:
             parts: list[str] = []
-            for _, el in ElementTree.iterparse(z.open(name)):
-                tag = el.tag.rsplit("}", 1)[-1]
-                if tag == "t":
-                    parts.append("".join(el.itertext()))
-                elif tag == "p":
-                    lines.append("".join(parts))
-                    parts = []
+            with z.open(name) as member:
+                for _, el in ElementTree.iterparse(member):
+                    tag = el.tag.rsplit("}", 1)[-1]
+                    if tag == "t":
+                        parts.append("".join(el.itertext()))
+                    elif tag == "p":
+                        lines.append("".join(parts))
+                        parts = []
     text = "\n".join(lines)
     if not text.strip():
         raise KeyError("본문 텍스트 없음")

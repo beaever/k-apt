@@ -3,6 +3,7 @@
 
 # 실행기 상태/로그
 .launcher/
+runtime/
 __pycache__/
 
 # backend (Python)

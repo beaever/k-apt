@@ -1,12 +1,14 @@
-"""더블클릭 실행기: 새 버전 적용 -> 필요한 부품 설치 -> 서버 2개 실행 -> 브라우저 열기.
+"""더블클릭 실행기: 최신 main 적용 -> Node.js·부품 설치 -> 서버 2개 실행 -> 브라우저 열기.
 
-start.bat(Windows) / start.command(macOS)가 호출한다. venv를 만들기 전에 돌아야 해서 표준 라이브러리만 쓴다.
+start.bat(Windows) / start.command(macOS)가 프로젝트 폴더에 Python을 받아 호출한다.
+venv를 만들기 전에 돌아야 해서 표준 라이브러리만 쓴다.
 구버전 Python에서도 버전 안내까지는 도달해야 하므로 3.10 이상 전용 문법(X | Y 등)을 쓰지 않는다.
 """
 
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import signal
@@ -19,6 +21,13 @@ import webbrowser
 import zipfile
 
 REPO = "beaever/k-apt"
+NODE_VERSION = "v22.23.4"
+# 플랫폼 -> (압축 확장자, SHA-256). nodejs.org의 SHASUMS256.txt 값.
+NODE_BUILDS = {
+    "win-x64": ("zip", "cbc74b5e0982c9dbb41525fd8fb5dcd32fbee237863f7829072f4639a1ce5f20"),
+    "darwin-arm64": ("tar.gz", "c9e1dbc748b33ed2d14f42445191ecaf14c56259c7a9a26d0042c49ec2b66428"),
+    "darwin-x64": ("tar.gz", "efcc2b0db6f94bf53eddb038fe2b370277a042bd29e4f19b8f8e23598795b819"),
+}
 # step4_excel.py의 f-string 문법이 3.12부터 동작한다
 MIN_PYTHON = (3, 12)
 BACKEND_PORT = 8420
@@ -31,11 +40,13 @@ BACKEND = os.path.join(ROOT, "backend")
 FRONTEND = os.path.join(ROOT, "frontend")
 VENV = os.path.join(BACKEND, "venv")
 VENV_PYTHON = os.path.join(VENV, "Scripts", "python.exe") if os.name == "nt" else os.path.join(VENV, "bin", "python")
+RUNTIME = os.path.join(ROOT, "runtime")
+NODE_DIR = os.path.join(RUNTIME, "node")
 STATE_DIR = os.path.join(ROOT, ".launcher")
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
 # 잘못된 압축 파일로 설치본을 덮어쓰지 않도록 적용 전에 확인한다
 REQUIRED_FILES = ("launcher.py", "backend/app/main.py", "backend/requirements.txt", "frontend/package-lock.json")
-TAG_PATTERN = re.compile(r"[\w.-]+")
+COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 
 
 class LauncherError(Exception):
@@ -64,15 +75,15 @@ def curl(*args, timeout=120):
     ).stdout
 
 
-def latest_tag():
-    body = curl(f"https://api.github.com/repos/{REPO}/releases/latest", timeout=15)
-    tag = json.loads(body).get("tag_name", "")
-    if not TAG_PATTERN.fullmatch(tag):
-        raise ValueError(f"잘못된 버전 이름: {tag!r}")
-    return tag
+def latest_commit():
+    body = curl("-H", "Accept: application/vnd.github.sha", f"https://api.github.com/repos/{REPO}/commits/main", timeout=15)
+    commit = body.decode("utf-8", "replace").strip()
+    if not COMMIT_PATTERN.fullmatch(commit):
+        raise ValueError(f"잘못된 버전 값: {commit[:80]!r}")
+    return commit
 
 
-def apply_release(zip_path, root, tag, state):
+def apply_update(zip_path, root, commit, state):
     """압축 파일을 검증한 뒤 설치 폴더에 덮어쓴다. venv/node_modules/결과 파일은 압축에 없어 유지된다.
 
     버전 기록은 맨 마지막에 하므로 도중에 실패하면 다음 실행 때 다시 적용된다.
@@ -105,24 +116,24 @@ def apply_release(zip_path, root, tag, state):
     if os.name != "nt":
         os.chmod(os.path.join(root, "start.command"), 0o755)
 
-    state.update(version=tag, files=files)
+    state.update(version=commit, files=files)
 
 
 def update(state):
-    """새 Release가 있으면 적용하고 True. 실패해도 지금 버전으로 계속 쓸 수 있어야 하므로 예외를 올리지 않는다."""
+    """main에 새 커밋이 있으면 적용하고 True. 실패해도 지금 버전으로 계속 쓸 수 있어야 하므로 예외를 올리지 않는다."""
     # 개발 폴더(git 체크아웃)의 작업 중인 코드를 덮어쓰지 않는다
     if os.path.exists(os.path.join(ROOT, ".git")):
         return False
     print("새 버전 확인 중...")
     try:
-        tag = latest_tag()
-        if tag == state.get("version"):
+        commit = latest_commit()
+        if commit == state.get("version"):
             return False
-        print(f"새 버전({tag})을 적용합니다...")
+        print(f"새 버전({commit[:7]})을 적용합니다...")
         with tempfile.TemporaryDirectory() as tmp:
             zip_path = os.path.join(tmp, "release.zip")
-            curl(f"https://github.com/{REPO}/archive/refs/tags/{tag}.zip", "-o", zip_path)
-            apply_release(zip_path, ROOT, tag, state)
+            curl(f"https://github.com/{REPO}/archive/{commit}.zip", "-o", zip_path)
+            apply_update(zip_path, ROOT, commit, state)
         save_state(state)
         return True
     except (subprocess.SubprocessError, OSError, ValueError, zipfile.BadZipFile) as e:
@@ -135,8 +146,43 @@ def file_hash(path):
         return hashlib.sha256(f.read()).hexdigest()
 
 
+def ensure_node():
+    """프로젝트 폴더의 Node.js를 쓰도록 PATH를 잡고 npm 경로를 반환한다. 없으면 내려받는다."""
+    bin_dir = NODE_DIR if os.name == "nt" else os.path.join(NODE_DIR, "bin")
+    npm = os.path.join(bin_dir, "npm.cmd" if os.name == "nt" else "npm")
+    if not os.path.exists(npm):
+        print("화면 실행에 필요한 Node.js를 내려받습니다...")
+        if os.name == "nt":
+            build = "win-x64"
+        else:
+            build = "darwin-arm64" if platform.machine() == "arm64" else "darwin-x64"
+        extension, expected_hash = NODE_BUILDS[build]
+        folder = f"node-{NODE_VERSION}-{build}"
+        os.makedirs(RUNTIME, exist_ok=True)
+        # 같은 디스크에서 옮기도록 runtime 안에 푼다. 끊겨도 node 폴더가 불완전하게 남지 않는다.
+        with tempfile.TemporaryDirectory(dir=RUNTIME) as tmp:
+            archive = os.path.join(tmp, f"{folder}.{extension}")
+            try:
+                curl(f"https://nodejs.org/dist/{NODE_VERSION}/{folder}.{extension}", "-o", archive, timeout=900)
+                if file_hash(archive) != expected_hash:
+                    raise LauncherError("내려받은 Node.js 파일이 손상되었습니다. 다시 실행해주세요.")
+                subprocess.run(["tar", "-xf", archive, "-C", tmp], check=True, capture_output=True)
+            except subprocess.SubprocessError as e:
+                raise LauncherError(f"Node.js를 내려받지 못했습니다. 인터넷 연결을 확인한 뒤 다시 실행해주세요. ({e})")
+            os.replace(os.path.join(tmp, folder), NODE_DIR)
+    os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+    return npm
+
+
 def install(state, npm):
     """부품 목록이 바뀌었을 때만 설치한다. 기록은 설치 성공 후에 하므로 실패하면 다음 실행 때 다시 시도된다."""
+    # venv는 만든 위치의 절대 경로에 묶여 있어 폴더를 옮기면 다시 만들어야 한다
+    if state.get("root") not in (None, ROOT) and os.path.isdir(VENV):
+        print("폴더 위치가 바뀌어 수집 서버 부품을 다시 설치합니다...")
+        shutil.rmtree(VENV)
+    state["root"] = ROOT
+    save_state(state)
+
     requirements = os.path.join(BACKEND, "requirements.txt")
     backend_hash = file_hash(requirements)
     if state.get("backend") != backend_hash or not os.path.exists(VENV_PYTHON):
@@ -151,7 +197,7 @@ def install(state, npm):
     frontend_hash = file_hash(os.path.join(FRONTEND, "package-lock.json"))
     if state.get("frontend") != frontend_hash or not os.path.isdir(os.path.join(FRONTEND, "node_modules")):
         print("화면 부품을 설치합니다...")
-        subprocess.run([npm, "ci", "--no-audit", "--no-fund"], cwd=FRONTEND, check=True)
+        subprocess.run([npm, "ci", "--no-audit", "--no-fund", "--no-progress", "--loglevel=error"], cwd=FRONTEND, check=True)
         state["frontend"] = frontend_hash
         save_state(state)
 
@@ -244,10 +290,6 @@ def run():
             f"Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} 이상이 필요합니다 (지금: {sys.version.split()[0]}).\n"
             "https://www.python.org/downloads/ 에서 설치한 뒤 다시 실행해주세요."
         )
-    npm = shutil.which("npm")
-    if npm is None:
-        raise LauncherError("Node.js가 없습니다. https://nodejs.org/ 에서 LTS 버전을 설치한 뒤 다시 실행해주세요.")
-
     backend_on, frontend_on = port_open(BACKEND_PORT), port_open(FRONTEND_PORT)
     if backend_on and frontend_on:
         # 이미 켜져 있으면 새로 띄우거나 실행 중인 파일을 덮어쓰지 않는다
@@ -262,6 +304,7 @@ def run():
     if "--no-update" not in sys.argv and update(state):
         # 실행기 자신도 바뀌었을 수 있으므로 새 파일로 다시 시작한다
         return run_updated()
+    npm = ensure_node()
     install(state, npm)
     serve(npm)
     return 0

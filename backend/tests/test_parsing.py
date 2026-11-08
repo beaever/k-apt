@@ -14,7 +14,8 @@ from pydantic import ValidationError
 
 from app.crawler.step2_download import _parse_detail_html, _unique_path
 from app.export.step4_excel import to_row_dict
-from app.parser.step3_parse import extract_text, parse_requirements
+from app.parser import step3_parse
+from app.parser.step3_parse import extract_text, parse_files, parse_requirements
 
 FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
 
@@ -97,7 +98,7 @@ def test_absent_requirement_is_not_applicable_but_unextractable_file_is_not():
         import app.parser.step3_parse as p3
 
         orig = p3.extract_text
-        p3.extract_text = lambda path: (text, None) if path == doc else ("", "스캔 PDF")
+        p3.extract_text = lambda path, ocr=False: (text, None) if path == doc else ("", "스캔 PDF")
         try:
             r = p3.parse_files([doc])
             assert r["capital_found"] and "5억원" in r["capital"], r
@@ -135,6 +136,62 @@ def test_kapt_household_wins_and_notice_value_is_marked():
     assert row["세대수"] == "407" and "공고문.hwp" in row["_근거_세대수"]
     row = to_row_dict({**base, "household_count": "410"})
     assert row["세대수"] == "410" and "_근거_세대수" not in row
+
+
+def test_ocr_reads_scan_but_row_still_needs_review():
+    """스캔 PDF는 글자 인식으로 값을 채우되 정상으로 처리하지 않고, 값이 없어도 해당 없음으로 단정하지 않는다."""
+    import pypdfium2
+
+    original = step3_parse._ocr_pdf
+    step3_parse._ocr_pdf = lambda path: "3공고일현재자본금5억이상인업체"
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "scan.pdf")
+            doc = pypdfium2.PdfDocument.new()
+            doc.new_page(100, 100)
+            doc.save(path)
+            doc.close()
+            assert parse_files([path])["extract_failed"], "OCR을 켜지 않으면 기존처럼 실패"
+            parsed = parse_files([path], None, True)
+    finally:
+        step3_parse._ocr_pdf = original
+    assert parsed["capital_found"] and parsed["ocr_used"]
+    assert parsed["record"] == step3_parse.NOT_FOUND_REASON
+    row = to_row_dict({"bid_num": "1", **parsed})
+    assert row["자본금"] == "5억" and "글자 인식" in row["상태"]
+
+
+def test_ocr_stops_when_all_fields_found_and_limits_pages():
+    """세 항목을 다 찾으면 다음 쪽을 읽지 않고, 못 찾아도 최대 쪽수까지만 읽는다."""
+    import pypdfium2
+
+    class Engine:
+        def __init__(self, text):
+            self.text, self.calls = text, 0
+
+        def __call__(self, image):
+            self.calls += 1
+            return type("Result", (), {"txts": [self.text]})
+
+    original = step3_parse._ocr_engine
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "scan.pdf")
+            doc = pypdfium2.PdfDocument.new()
+            for _ in range(step3_parse.OCR_MAX_PAGES + 1):
+                doc.new_page(100, 100)
+            doc.save(path)
+            doc.close()
+            for text, expected in (
+                ("자본금5억이상\n실적5건이상\n특허제10-1234567호", 1),
+                ("내용없음", step3_parse.OCR_MAX_PAGES),
+            ):
+                engine = Engine(text)
+                step3_parse._ocr_engine = lambda: engine
+                step3_parse._ocr_pdf(path)
+                assert engine.calls == expected, (text, engine.calls)
+    finally:
+        step3_parse._ocr_engine = original
 
 
 def test_hwp_table_content_extracted():

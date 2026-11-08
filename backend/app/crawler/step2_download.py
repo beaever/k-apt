@@ -203,6 +203,10 @@ async def _fetch_external_announcement(page, bid_dir: str, detail: dict) -> tupl
         return [], f"'해당 공고 가기' 클릭 후 원문 페이지가 열리지 않음({e})"
 
     try:
+        await popup.wait_for_load_state("domcontentloaded")
+        # 인증서 오류 등으로 접속 자체가 안 되면 버튼을 30초씩 기다리지 않고 바로 실패 처리
+        if popup.url.startswith("chrome-error://"):
+            return [], "원문 사이트에 접속하지 못함(사이트 보안 인증서 오류 등)"
         doc_link = popup.locator("text=공고원문").first
         # a2p.kr은 2026년 8월경 버튼 이름을 "공고문 다운로드" -> "공고문 전체 다운로드"로 바꿨다
         download_btn = popup.locator("text=/공고문\\s*(전체\\s*)?다운로드/").first

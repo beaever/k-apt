@@ -92,6 +92,8 @@ def _amount_in_eok(amount: str) -> float | None:
 def _suspicions(r: dict, capital: str, record: str) -> list[str]:
     """값은 찾았지만 오인 가능성이 있는 신호들."""
     reasons = []
+    if r.get("ocr_used"):
+        reasons.append("스캔 PDF를 글자 인식으로 읽어 원문 대조 필요")
     amounts = r.get("capital_amounts") or []
     if len(amounts) > 1:
         reasons.append(f"공고문에 자본금 금액이 여러 개({', '.join(amounts)})")

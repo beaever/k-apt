@@ -1,8 +1,19 @@
 """1단계: K-apt 접속 및 낙찰공고 목록 수집."""
 
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
 BASE_URL = "https://www.k-apt.go.kr"
 
 REGION_CODES = {"서울": "11", "인천": "28", "경기": "41"}
+
+
+ACCESS_BLOCKED_MESSAGE = (
+    "K-apt 접속이 제한됐을 수 있어요. 브라우저로 K-apt에 들어가 안내 팝업에서 제한을 해제한 뒤, 잠시 후 다시 시도해 주세요."
+)
+
+
+class KaptAccessBlocked(Exception):
+    pass
 
 
 async def establish_session(page):
@@ -28,7 +39,13 @@ async def open_bid_result_page(page):
             "() => document.querySelector(\"a[href='/bid/bidList.do?type=3']\").click()"
         )
     # 페이지 전환 직후 inline script(setArea/initList 등) 파싱이 늦을 때가 있어 대기
-    await page.wait_for_function("typeof setArea === 'function'")
+    try:
+        await page.wait_for_function("typeof setArea === 'function'")
+    except PlaywrightTimeoutError:
+        # 과도한 접속으로 제한되면 목록 대신 메인 페이지로 돌아온다
+        if "/web/main/" in page.url:
+            raise KaptAccessBlocked(ACCESS_BLOCKED_MESSAGE) from None
+        raise
 
 
 async def search(page, regions: list[str], keyword: str, date_start: str, date_end: str):

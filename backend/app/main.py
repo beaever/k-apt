@@ -236,6 +236,8 @@ async def _run_job(job_id: str, req: CollectRequest, job_dir: str):
             check_count=sum(1 for rd in row_dicts if rd["상태"].startswith(step4_excel.STATUS_CHECK)),
             fail_count=sum(1 for rd in row_dicts if rd["상태"].startswith(step4_excel.STATUS_FAIL)),
         )
+    except step1_search.KaptAccessBlocked as e:
+        job.update(status="error", message=str(e))
     except Exception as e:
         job.update(status="error", message=f"수집 중 오류가 발생했습니다({e})")
 

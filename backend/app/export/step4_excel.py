@@ -31,6 +31,8 @@ COLUMNS = [
 STATUS_OK = "정상"
 STATUS_CHECK = "확인 필요"
 STATUS_FAIL = "수집 실패"
+# 공고문을 읽었고 관련 문구가 전혀 없을 때만 쓰는 표시. 못 읽었거나 불명확하면 사유·확인 필요가 그대로 남는다.
+NOT_APPLICABLE_LABELS = {"자본금": "제한없음", "실적": "제한없음", "공법번호": "미적용"}
 
 # 값 대신 "사유"가 들어갈 수 있는 컬럼 -> parse_files()가 반환하는 필드 키
 PARSED_FIELDS = {"자본금": "capital", "실적": "record", "공법번호": "patent_no"}
@@ -142,6 +144,9 @@ def to_row_dict(r: dict) -> dict:
         "낙찰업체": r.get("winner", ""),
         "낙찰금액": r.get("bid_amount") or r.get("winner_amount", ""),
     }
+    for col, label in NOT_APPLICABLE_LABELS.items():
+        if values[col] == NOT_APPLICABLE:
+            values[col] = label
 
     if not r.get("success", True):
         # 브라우저 오류는 뒤에 여러 줄짜리 내부 로그가 붙어 첫 줄만 보여준다

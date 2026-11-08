@@ -248,6 +248,20 @@ def test_row_values_are_summarized():
     assert to_row_dict(row)["실적"] == "5년 5건"
 
 
+def test_absent_requirement_labels():
+    """요건이 없다고 판정된 칸만 제한없음/미적용으로 보이고, 못 찾은 칸은 사유가 그대로 남는다."""
+    from app.parser.step3_parse import NOT_APPLICABLE, NOT_FOUND_REASON
+
+    row = _complete_row()
+    row.update(capital=NOT_APPLICABLE, record=NOT_APPLICABLE, patent_no=NOT_APPLICABLE)
+    result = to_row_dict(row)
+    assert (result["자본금"], result["실적"], result["공법번호"]) == ("제한없음", "제한없음", "미적용"), result
+    assert result["상태"] == "정상", result
+    row.update(record=NOT_FOUND_REASON, record_found=False)
+    result = to_row_dict(row)
+    assert result["실적"] == NOT_FOUND_REASON and result["상태"].startswith("확인 필요"), result
+
+
 def test_unique_path_does_not_overwrite_same_filename():
     with tempfile.TemporaryDirectory() as d:
         first = _unique_path(d, "공고문.hwp")

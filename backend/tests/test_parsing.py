@@ -194,6 +194,50 @@ def test_ocr_stops_when_all_fields_found_and_limits_pages():
         step3_parse._ocr_engine = original
 
 
+def _pdf_with_text(path: str, text: str) -> None:
+    """글꼴 하나로 된 최소 PDF. 스캔본 안의 숨은 글자처럼 짧은 텍스트를 넣는 데 쓴다."""
+    stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode()
+    with open(path, "wb") as f:
+        f.write(
+            b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+            b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+            b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R"
+            b"/Resources<</Font<</F1 5 0 R>>>>>>endobj\n"
+            + f"4 0 obj<</Length {len(stream)}>>stream\n".encode() + stream + b"\nendstream endobj\n"
+            b"5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
+            b"trailer<</Root 1 0 R>>\n%%EOF\n"
+        )
+
+
+def test_pdf_with_only_hidden_text_is_treated_as_scan():
+    """숨은 글자 몇 자만 있는 PDF를 "요건 없음"으로 단정하지 않고 글자 인식 대상으로 넘긴다."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "scan.pdf")
+        _pdf_with_text(path, "1234")
+        parsed = parse_files([path])
+    assert parsed["extract_failed"] and parsed["needs_ocr"]
+
+
+def test_partly_scanned_notice_requests_ocr():
+    """글자가 있는 첨부가 섞여 있어도 스캔 첨부가 있으면 글자 인식을 요청하고, 다른 오류로는 요청하지 않는다."""
+    original = step3_parse.extract_text
+    results = {"a.pdf": ("자본금 5억 이상", None), "b.pdf": ("", step3_parse.SCAN_PDF_ERROR), "c.hwp": ("", "HWP 파싱 실패")}
+    step3_parse.extract_text = lambda path, ocr=False: results[path]
+    try:
+        assert parse_files(["a.pdf", "b.pdf"])["needs_ocr"]
+        assert not parse_files(["a.pdf", "c.hwp"])["needs_ocr"]
+    finally:
+        step3_parse.extract_text = original
+
+
+def test_method_requirement_without_method_word_needs_review():
+    """공법·특허라는 말 없는 공법 요건을 "요건 없음"으로 단정하지 않고 근거 문장을 남긴다."""
+    for line in ("바. 내구성과 접착성을 향상시키는 유화 아스팔트 시공 가능 업체", "마. 기술능력 : 개질 유화 아스팔트 조성물"):
+        parsed = parse_requirements(line)
+        assert not parsed["patent_no_absent"] and not parsed["patent_no_found"] and parsed["patent_no"] == line
+    assert parse_requirements("나. 포장공사업 면허 보유 업체")["patent_no_absent"]
+
+
 def test_hwp_table_content_extracted():
     """실제 K-apt 공고문 hwp: 참가자격(자본금/실적/특허)이 표 안에 들어있는 경우.
 

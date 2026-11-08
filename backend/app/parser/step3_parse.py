@@ -30,6 +30,8 @@ CAPITAL_KEYWORD = re.compile(r"자\s*본\s*금")
 RECORD_KEYWORD = re.compile(r"실\s*적")
 PATENT_KEYWORD = re.compile(r"특\s*허")
 METHOD_KEYWORD = re.compile(r"공\s*법")
+# "유화 아스팔트 시공 가능 업체", "기술능력 : ... 조성물"처럼 공법·특허라는 말 없이 거는 공법 요건
+METHOD_HINT = re.compile(r"시\s*공\s*(?:이\s*)?가\s*능|기\s*술\s*능\s*력")
 # 한국 특허(10-)/실용신안(20-) 등록번호 형식. 전화번호(010-...)·사업자번호에 걸리지 않도록 앞뒤 경계를 둔다.
 PATENT_NUMBER = re.compile(r"(?<![\d-])([12]0)\s*-\s*(\d{7})(?!\d)")
 # "실적" 단어 없이 "최근 N년간 ... M건 이상"으로만 표현되는 공고문 대비 폴백 패턴
@@ -42,7 +44,9 @@ ABSENCE_CHECK = {
     "capital": CAPITAL_KEYWORD,
     # "최근 1년간 행정처분 확인서"는 대부분의 공고문에 있는 제출서류라 실적 요건의 단서가 아니다
     "record": re.compile(r"실\s*적|최근\s*\d+\s*년간(?!\s*행\s*정\s*처\s*분)"),
-    "patent_no": re.compile(r"특\s*허|공\s*법|신\s*기\s*술|실\s*용\s*신\s*안|[12]0\s*-\s*\d{7}"),
+    "patent_no": re.compile(
+        r"특\s*허|공\s*법|신\s*기\s*술|실\s*용\s*신\s*안|[12]0\s*-\s*\d{7}|시\s*공\s*(?:이\s*)?가\s*능|기\s*술\s*능\s*력"
+    ),
 }
 # K-apt에 세대수가 없는 공고의 보완용 ("단지규모 : 8개동 407세대", "세대수 588세대"). "500세대 이상"은 실적 요건이라 제외.
 NOTICE_HOUSEHOLD = re.compile(
@@ -62,6 +66,9 @@ NOT_FOUND_REASON = "공고문 내용에서 해당 항목 관련 문구를 찾지
 NEEDS_CHECK_PREFIX = "[확인 필요] "
 # shortcut: 실측 스캔 4건 모두 자본금·실적·특허번호가 앞 2쪽 안에 있었음(1쪽에 15~30초), 뒤쪽 요건이 나오면 늘릴 것
 OCR_MAX_PAGES = 2
+# 스캔본에도 숨은 글자가 몇 자 있을 수 있다 (실측 쪽당 스캔본 5자 이하, 일반 문서 334자 이상)
+MIN_PDF_CHARS_PER_PAGE = 100
+SCAN_PDF_ERROR = "PDF에서 텍스트를 추출하지 못함(스캔 이미지 PDF일 가능성)"
 # 공고문 전체에 관련 문구가 전혀 없으면 요건이 없는 공고로 본다 (실제 공고 25건 중 9건이 특허/공법 요건 없음)
 NOT_APPLICABLE = "해당 없음(공고문에 관련 요건 없음)"
 
@@ -104,15 +111,19 @@ def extract_text(path: str, ocr: bool = False) -> tuple[str, str | None]:
         try:
             with pdfplumber.open(path) as pdf:
                 text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+                min_chars = MIN_PDF_CHARS_PER_PAGE * max(len(pdf.pages), 1)
         except Exception as e:
             return "", f"PDF를 열지 못함({e})"
-        if not text.strip() and ocr:
-            try:
-                text = _ocr_pdf(path)
-            except Exception as e:
-                return "", f"스캔 PDF 글자 인식 실패({str(e)[:100]})"
+        if len(text.strip()) >= min_chars:
+            return text, None
+        if not ocr:
+            return "", SCAN_PDF_ERROR
+        try:
+            text = _ocr_pdf(path)
+        except Exception as e:
+            return "", f"스캔 PDF 글자 인식 실패({str(e)[:100]})"
         if not text.strip():
-            return "", "PDF에서 텍스트를 추출하지 못함(스캔 이미지 PDF일 가능성)"
+            return "", SCAN_PDF_ERROR
         return text, None
 
     if ext == ".hwp":
@@ -261,7 +272,7 @@ def parse_requirements(text: str) -> dict:
             (
                 line
                 for line in lines
-                if (PATENT_KEYWORD.search(line) or METHOD_KEYWORD.search(line))
+                if (PATENT_KEYWORD.search(line) or METHOD_KEYWORD.search(line) or METHOD_HINT.search(line))
                 and not HEADING_LIST.search(line)
             ),
             "",
@@ -337,11 +348,13 @@ def parse_files(paths: list[str], fetch_error: str | None = None, ocr: bool = Fa
                 if key == "patent_no":
                     patent_evidence = parsed["patent_no_evidence"]
 
+    needs_ocr = any(SCAN_PDF_ERROR in e for e in extract_errors)
     if not any_text_extracted:
         reason = "; ".join(extract_errors) if extract_errors else "첨부파일에서 텍스트를 추출하지 못함"
-        return _all_missing(reason)
+        return {**_all_missing(reason), "needs_ocr": needs_ocr}
 
     result = {
+        "needs_ocr": needs_ocr,
         "ocr_used": ocr,
         "extract_errors": extract_errors,
         "capital_amounts": list(capital_amounts),

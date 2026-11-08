@@ -198,7 +198,7 @@ async def _parse_and_store(idx: int, row: dict, detail: dict, results: list, job
         loop = asyncio.get_running_loop()
         files, fetch_error = detail.get("files", []), detail.get("download_error")
         parsed = await loop.run_in_executor(_get_parse_pool(), step3_parse.parse_files, files, fetch_error)
-        if OCR_ENABLED and files and parsed.get("extract_failed"):
+        if OCR_ENABLED and parsed.get("needs_ocr"):
             parsed = await loop.run_in_executor(_get_ocr_pool(), step3_parse.parse_files, files, fetch_error, True)
         results[idx] = {**row, **detail, **parsed, "success": True, "error": ""}
     except Exception as e:

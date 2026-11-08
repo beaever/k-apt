@@ -10,6 +10,7 @@ import os
 import re
 import zipfile
 from contextlib import closing
+from functools import lru_cache
 from xml.etree import ElementTree
 
 import pdfplumber
@@ -59,12 +60,44 @@ DOWNLOAD_FAILED_REASON = "공고문을 확보하지 못해 확인 불가"
 NOT_FOUND_REASON = "공고문 내용에서 해당 항목 관련 문구를 찾지 못함"
 # 관련 문구는 찾았지만 값(금액/건수/특허번호)이 확인되지 않은 경우 셀 앞에 붙는 표시
 NEEDS_CHECK_PREFIX = "[확인 필요] "
+# shortcut: 실측 스캔 4건 모두 자본금·실적·특허번호가 앞 2쪽 안에 있었음(1쪽에 15~30초), 뒤쪽 요건이 나오면 늘릴 것
+OCR_MAX_PAGES = 2
 # 공고문 전체에 관련 문구가 전혀 없으면 요건이 없는 공고로 본다 (실제 공고 25건 중 9건이 특허/공법 요건 없음)
 NOT_APPLICABLE = "해당 없음(공고문에 관련 요건 없음)"
 
 
-def extract_text(path: str) -> tuple[str, str | None]:
-    """(추출된 텍스트, 실패 사유) 반환. 성공하면 실패 사유는 None."""
+@lru_cache
+def _ocr_engine():
+    # 모델이 크고 스캔 공고에서만 필요해 쓸 때 불러온다
+    from rapidocr import LangRec, ModelType, OCRVersion, RapidOCR
+
+    logging.getLogger("RapidOCR").setLevel(logging.ERROR)
+    # 방향 판별(use_cls)을 켜면 똑바른 줄을 180도 돌려 읽어 "자본금" 줄을 놓친다 (실측 4건 중 2건)
+    return RapidOCR(params={
+        "Rec.lang_type": LangRec.KOREAN,
+        "Rec.ocr_version": OCRVersion.PPOCRV4,
+        "Rec.model_type": ModelType.MOBILE,
+        "Global.use_cls": False,
+    })
+
+
+def _ocr_pdf(path: str) -> str:
+    import pypdfium2
+
+    lines: list[str] = []
+    with pypdfium2.PdfDocument(path) as doc:
+        for i in range(min(len(doc), OCR_MAX_PAGES)):
+            result = _ocr_engine()(doc[i].render(scale=3).to_numpy()[:, :, ::-1])
+            lines += result.txts or []
+            # 1쪽에 15~30초가 걸려 세 항목을 다 찾으면 다음 쪽은 읽지 않는다
+            parsed = parse_requirements("\n".join(lines))
+            if all(parsed[f"{key}_found"] for key in FIELDS):
+                break
+    return "\n".join(lines)
+
+
+def extract_text(path: str, ocr: bool = False) -> tuple[str, str | None]:
+    """(추출된 텍스트, 실패 사유) 반환. 성공하면 실패 사유는 None. ocr이면 스캔 PDF를 글자 인식으로 읽는다."""
     ext = os.path.splitext(path)[1].lower()
 
     if ext == ".pdf":
@@ -73,6 +106,11 @@ def extract_text(path: str) -> tuple[str, str | None]:
                 text = "\n".join(p.extract_text() or "" for p in pdf.pages)
         except Exception as e:
             return "", f"PDF를 열지 못함({e})"
+        if not text.strip() and ocr:
+            try:
+                text = _ocr_pdf(path)
+            except Exception as e:
+                return "", f"스캔 PDF 글자 인식 실패({str(e)[:100]})"
         if not text.strip():
             return "", "PDF에서 텍스트를 추출하지 못함(스캔 이미지 PDF일 가능성)"
         return text, None
@@ -263,7 +301,7 @@ def _all_missing(reason: str) -> dict:
     return result
 
 
-def parse_files(paths: list[str], fetch_error: str | None = None) -> dict:
+def parse_files(paths: list[str], fetch_error: str | None = None, ocr: bool = False) -> dict:
     if not paths:
         return _all_missing(fetch_error or DOWNLOAD_FAILED_REASON)
 
@@ -279,7 +317,7 @@ def parse_files(paths: list[str], fetch_error: str | None = None) -> dict:
     any_text_extracted = False
 
     for path in paths:
-        text, err = extract_text(path)
+        text, err = extract_text(path, ocr)
         if err:
             extract_errors.append(f"{os.path.basename(path)}: {err}")
             continue
@@ -304,6 +342,7 @@ def parse_files(paths: list[str], fetch_error: str | None = None) -> dict:
         return _all_missing(reason)
 
     result = {
+        "ocr_used": ocr,
         "extract_errors": extract_errors,
         "capital_amounts": list(capital_amounts),
         "patent_no_evidence": patent_evidence,
@@ -319,7 +358,8 @@ def parse_files(paths: list[str], fetch_error: str | None = None) -> dict:
         elif value:
             result[key] = NEEDS_CHECK_PREFIX + value
             result[f"{key}_found"] = False
-        elif absent[key] and not extract_errors:
+        # 글자 인식은 앞쪽만 읽고 오독도 있어 "문구가 없다"고 단정할 수 없다
+        elif absent[key] and not extract_errors and not ocr:
             result[key] = NOT_APPLICABLE
             result[f"{key}_found"] = True
         else:

@@ -38,11 +38,17 @@ STORAGE_TTL_SEC = 24 * 3600
 # 무료 호스팅은 메모리가 적어 동시 크로미움 컨텍스트 수를 줄여야 할 수 있음.
 DETAIL_CONCURRENCY = int(os.environ.get("DETAIL_CONCURRENCY", "5"))
 
+FETCH_ATTEMPTS = 3
+
 # PDF/HWP 파싱은 순수 파이썬 CPU 작업이라 스레드로 돌리면 GIL을 잡고 있어 크롤링(이벤트 루프)까지 느려진다
 # (실측: 공고 1건 처리가 단독 0.3초 -> 파싱과 동시 실행 시 수 초). 별도 프로세스에서 돌린다.
 # 무료 호스팅은 메모리가 적어 PARSE_PROCESSES로 줄일 수 있음 (프로세스당 약 100MB).
 PARSE_PROCESSES = int(os.environ.get("PARSE_PROCESSES", str(min(4, os.cpu_count() or 1))))
 _parse_pool: ProcessPoolExecutor | None = None
+# 글자 인식은 약 900MB를 쓰므로 동시에 하나만 돌리고 끝나면 프로세스째 메모리를 돌려준다.
+# 메모리가 적은 호스팅은 OCR_ENABLED=0으로 끈다 (스캔 PDF는 "수집 실패"로 남음).
+OCR_ENABLED = os.environ.get("OCR_ENABLED", "1") == "1"
+_ocr_pool: ProcessPoolExecutor | None = None
 
 
 def _get_parse_pool() -> ProcessPoolExecutor:
@@ -51,6 +57,13 @@ def _get_parse_pool() -> ProcessPoolExecutor:
         # Linux 기본값 fork는 Playwright 연결을 물려받아 수집 종료 단계에서 멈춘다
         _parse_pool = ProcessPoolExecutor(max_workers=PARSE_PROCESSES, mp_context=get_context("spawn"))
     return _parse_pool
+
+
+def _get_ocr_pool() -> ProcessPoolExecutor:
+    global _ocr_pool
+    if _ocr_pool is None:
+        _ocr_pool = ProcessPoolExecutor(max_workers=1, mp_context=get_context("spawn"), max_tasks_per_child=1)
+    return _ocr_pool
 
 # 수집은 수 분~수십 분 걸려 HTTP 요청 하나로 기다리면 브라우저/프록시가 먼저 끊는다.
 # 백그라운드 작업으로 돌리고 프런트는 상태를 폴링한다.
@@ -157,18 +170,20 @@ async def _detail_worker(browser, row_queue: "asyncio.Queue", results: list, job
             except asyncio.QueueEmpty:
                 break
             detail = None
-            for attempt in range(2):
+            for attempt in range(FETCH_ATTEMPTS):
                 try:
                     detail = await step2_download.fetch_detail(
                         detail_page, row["bid_num"], row["has_attachment"], job_dir
                     )
-                    break
+                    # 외부 원문 사이트 지연은 예외가 아니라 빈 파일 목록과 사유로 돌아온다
+                    if detail["files"]:
+                        break
                 except Exception as e:
                     results[idx] = {**row, "success": False, "error": str(e)}
-                    # 타임아웃 난 페이지 이동이 뒤늦게 끝나면서 다음 공고의 이동을 끊는 경우가 있어
-                    # ("interrupted by another navigation") 페이지를 새로 만들어 한 번 더 시도한다.
-                    await detail_page.close()
-                    detail_page = await context.new_page()
+                # 타임아웃 난 페이지 이동이 뒤늦게 끝나면서 다음 공고의 이동을 끊는 경우가 있어
+                # ("interrupted by another navigation") 페이지를 새로 만들어 다시 시도한다.
+                await detail_page.close()
+                detail_page = await context.new_page()
             if detail is None:
                 job["done"] += 1
                 continue
@@ -180,9 +195,11 @@ async def _detail_worker(browser, row_queue: "asyncio.Queue", results: list, job
 
 async def _parse_and_store(idx: int, row: dict, detail: dict, results: list, job: dict):
     try:
-        parsed = await asyncio.get_running_loop().run_in_executor(
-            _get_parse_pool(), step3_parse.parse_files, detail.get("files", []), detail.get("download_error")
-        )
+        loop = asyncio.get_running_loop()
+        files, fetch_error = detail.get("files", []), detail.get("download_error")
+        parsed = await loop.run_in_executor(_get_parse_pool(), step3_parse.parse_files, files, fetch_error)
+        if OCR_ENABLED and files and parsed.get("extract_failed"):
+            parsed = await loop.run_in_executor(_get_ocr_pool(), step3_parse.parse_files, files, fetch_error, True)
         results[idx] = {**row, **detail, **parsed, "success": True, "error": ""}
     except Exception as e:
         results[idx] = {**row, **detail, "success": False, "error": f"공고문 분석 중 오류({e})"}

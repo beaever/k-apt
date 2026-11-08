@@ -238,6 +238,48 @@ def test_method_requirement_without_method_word_needs_review():
     assert parse_requirements("나. 포장공사업 면허 보유 업체")["patent_no_absent"]
 
 
+def test_redirect_to_main_is_reported_as_access_block():
+    """목록 대신 메인으로 돌아오면 차단 안내를, 목록 페이지의 시간 초과는 원래 오류를 낸다."""
+    import asyncio
+
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+    from app.crawler import step1_search
+
+    class Navigation:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    class Page:
+        def __init__(self, url):
+            self.url = url
+
+        async def goto(self, *args, **kwargs):
+            pass
+
+        def expect_navigation(self, **kwargs):
+            return Navigation()
+
+        async def evaluate(self, *args):
+            pass
+
+        async def wait_for_function(self, *args):
+            raise PlaywrightTimeoutError("timeout")
+
+    for url, expected in (
+        ("https://www.k-apt.go.kr/web/main/index.do", step1_search.KaptAccessBlocked),
+        ("https://www.k-apt.go.kr/bid/bidList.do?type=3", PlaywrightTimeoutError),
+    ):
+        try:
+            asyncio.run(step1_search.open_bid_result_page(Page(url)))
+        except expected:
+            continue
+        raise AssertionError(url)
+
+
 def test_hwp_table_content_extracted():
     """실제 K-apt 공고문 hwp: 참가자격(자본금/실적/특허)이 표 안에 들어있는 경우.
 

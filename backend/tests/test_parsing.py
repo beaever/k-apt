@@ -280,6 +280,72 @@ def test_redirect_to_main_is_reported_as_access_block():
         raise AssertionError(url)
 
 
+def test_detail_request_redirected_to_main_stops_collection():
+    """수집 도중 제한되면 상세 대신 다른 페이지가 오므로 차단으로 보고, 정상 상세는 그대로 처리한다."""
+    import asyncio
+
+    from app.crawler import step1_search, step2_download
+
+    class Response:
+        ok = True
+
+        def __init__(self, url, html):
+            self.url, self.html = url, html
+
+        async def text(self):
+            return self.html
+
+    class Page:
+        def __init__(self, response):
+            request = type("Request", (), {"get": lambda _, url: asyncio.sleep(0, response)})()
+            self.context = type("Context", (), {"request": request})()
+
+        async def goto(self, *args, **kwargs):
+            pass
+
+    detail_html = read_fixture("detail_a2p.html")
+    for url, html in (
+        ("https://www.k-apt.go.kr/web/main/index.do", detail_html),
+        ("https://www.k-apt.go.kr/bid/bidDetail.do", "<html><body>잠시 후 다시 이용해 주세요</body></html>"),
+    ):
+        try:
+            asyncio.run(step2_download.fetch_detail(Page(Response(url, html)), "1", False, tempfile.mkdtemp()))
+        except step1_search.KaptAccessBlocked:
+            continue
+        raise AssertionError(url)
+
+    async def no_external(*args):
+        return [], "외부 원문 없음"
+
+    step2_download._fetch_external_announcement, original = no_external, step2_download._fetch_external_announcement
+    try:
+        detail = asyncio.run(step2_download.fetch_detail(
+            Page(Response("https://www.k-apt.go.kr/bid/bidDetail.do", detail_html)), "1", False, tempfile.mkdtemp()
+        ))
+    finally:
+        step2_download._fetch_external_announcement = original
+    assert detail["apt_name"] and detail["download_error"] == "외부 원문 없음", detail
+
+
+def test_cached_detail_round_trip_and_missing_file():
+    from app import main
+
+    with tempfile.TemporaryDirectory() as d:
+        main.CACHE_DIR, original = d, main.CACHE_DIR
+        try:
+            entry = os.path.join(d, "123")
+            os.makedirs(entry)
+            path = os.path.join(entry, "공고문.pdf")
+            open(path, "wb").close()
+            main._save_cached_detail("123", {"apt_name": "가", "files": [path], "download_error": None})
+            assert main._load_cached_detail("123") == {"apt_name": "가", "files": [path], "download_error": None}
+            os.remove(path)
+            assert main._load_cached_detail("123") is None
+            assert main._load_cached_detail("없음") is None
+        finally:
+            main.CACHE_DIR = original
+
+
 def test_hwp_table_content_extracted():
     """실제 K-apt 공고문 hwp: 참가자격(자본금/실적/특허)이 표 안에 들어있는 경우.
 

@@ -5,10 +5,17 @@ import os
 
 from bs4 import BeautifulSoup
 
+from app.crawler.step1_search import ACCESS_BLOCKED_MESSAGE, KaptAccessBlocked
+
 DETAIL_URL_TMPL = "https://www.k-apt.go.kr/bid/bidDetail.do?bidNum={bid_num}&type=3"
 # 상세페이지 첨부 위젯(DEXT5)이 내부적으로 호출하는 첨부 목록/다운로드 주소 (실사이트 네트워크 요청으로 확인)
 FILE_LIST_URL = "https://www.k-apt.go.kr/bid/bidFileListData.do?seq=BID_FILE"
 FILE_DOWNLOAD_URL = "https://www.k-apt.go.kr/cmm/file/BID/fileDownload.do"
+
+EMPTY_FILE_LIST_ERROR = "목록에는 첨부 표시가 있지만 첨부파일 목록이 비어 있음"
+SITE_UNREACHABLE_ERROR = "원문 사이트에 접속하지 못함(사이트 보안 인증서 오류 등)"
+# 다시 받아도 같은 결과인 실패 (실측: 인증서 오류 사이트는 매번 실패). 그 외 원문 사이트 지연은 재시도로 풀렸다.
+PERMANENT_ERRORS = (EMPTY_FILE_LIST_ERROR, SITE_UNREACHABLE_ERROR)
 
 
 def _clean(text: str) -> str:
@@ -144,7 +151,7 @@ async def _download_kapt_files(request, html: str, bid_num: str, bid_dir: str) -
         return [], f"첨부 목록 조회 실패({body.get('msg') or body.get('code')})"
     entries = body.get("data") or []
     if not entries:
-        return [], "목록에는 첨부 표시가 있지만 첨부파일 목록이 비어 있음"
+        return [], EMPTY_FILE_LIST_ERROR
 
     files, errors = [], []
     for entry in entries:
@@ -206,7 +213,7 @@ async def _fetch_external_announcement(page, bid_dir: str, detail: dict) -> tupl
         await popup.wait_for_load_state("domcontentloaded")
         # 인증서 오류 등으로 접속 자체가 안 되면 버튼을 30초씩 기다리지 않고 바로 실패 처리
         if popup.url.startswith("chrome-error://"):
-            return [], "원문 사이트에 접속하지 못함(사이트 보안 인증서 오류 등)"
+            return [], SITE_UNREACHABLE_ERROR
         doc_link = popup.locator("text=공고원문").first
         # a2p.kr은 2026년 8월경 버튼 이름을 "공고문 다운로드" -> "공고문 전체 다운로드"로 바꿨다
         download_btn = popup.locator("text=/공고문\\s*(전체\\s*)?다운로드/").first
@@ -276,6 +283,10 @@ async def fetch_detail(page, bid_num: str, has_attachment: bool, download_dir: s
         raise RuntimeError(f"상세페이지 응답 오류(HTTP {resp.status})")
     html = await resp.text()
     detail = _parse_detail_html(html)
+    # 접속이 제한되면 상세 대신 메인 등 다른 페이지가 온다 -> 남은 공고를 계속 요청하지 않도록 중단
+    # shortcut: 실제 차단 시 응답은 미확인이라 "상세 표가 없음"으로 판단, 상세 레이아웃이 바뀌면 오탐 가능
+    if "/web/main/" in resp.url or not (detail["apt_name"] or detail["work_name"]):
+        raise KaptAccessBlocked(ACCESS_BLOCKED_MESSAGE)
 
     bid_dir = os.path.join(download_dir, bid_num)
     os.makedirs(bid_dir, exist_ok=True)

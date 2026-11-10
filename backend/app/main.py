@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import shutil
 import time
@@ -34,6 +35,13 @@ STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
 os.makedirs(STORAGE_DIR, exist_ok=True)
 # 이 시간보다 오래된 작업 폴더(다운로드 첨부파일 + 엑셀)는 새 작업 시작 시 삭제
 STORAGE_TTL_SEC = 24 * 3600
+# 공고별 상세정보·첨부파일 저장본. 같은 공고를 다시 수집할 때 K-apt에 접속하지 않고 재사용한다.
+# 분석(PDF/HWP 읽기·판정)은 매번 새로 하므로 분석 규칙을 고치면 저장본에도 바로 반영된다.
+# step2_download의 상세정보 추출 방식을 바꾸면 이름의 버전을 올려 옛 저장본을 버린다.
+CACHE_DIR = os.path.join(STORAGE_DIR, "cache-v1")
+# shortcut: 공고가 정정돼도 이 기간에는 저장본을 쓴다, 정정이 잦으면 기간을 줄일 것
+CACHE_TTL_SEC = 30 * 24 * 3600
+CACHE_DETAIL_FILE = "detail.json"
 
 # 무료 호스팅은 메모리가 적어 동시 크로미움 컨텍스트 수를 줄여야 할 수 있음.
 DETAIL_CONCURRENCY = int(os.environ.get("DETAIL_CONCURRENCY", "5"))
@@ -102,7 +110,7 @@ class CollectRequest(BaseModel):
 
 
 async def run_collect(
-    regions: list[str], keyword: str, date_start: date, date_end: date, job_dir: str, job: dict
+    regions: list[str], keyword: str, date_start: date, date_end: date, job: dict
 ) -> list[dict]:
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -136,13 +144,15 @@ async def run_collect(
         job["message"] = "공고별 상세정보와 입찰공고문(HWP/PDF)을 처리하고 있어요"
         worker_count = min(DETAIL_CONCURRENCY, len(rows))
         workers = [
-            asyncio.create_task(_detail_worker(browser, row_queue, results, job_dir, job))
+            asyncio.create_task(_detail_worker(browser, row_queue, results, job))
             for _ in range(worker_count)
         ]
         # 워커 하나가 세션 확보 등에서 죽어도 나머지 워커가 큐를 계속 처리하도록 예외를 전파하지 않음
         await asyncio.gather(*workers, return_exceptions=True)
 
         await browser.close()
+    if "blocked" in job:
+        raise step1_search.KaptAccessBlocked(job["blocked"])
     # 모든 워커가 죽어 처리되지 못한 행은 None으로 남는다 -> 실패 행으로 채워 목록에서 누락되지 않게 함
     return [
         r or {**row, "success": False, "error": "처리되지 않음(브라우저 세션 확보 실패)"}
@@ -150,7 +160,7 @@ async def run_collect(
     ]
 
 
-async def _detail_worker(browser, row_queue: "asyncio.Queue", results: list, job_dir: str, job: dict):
+async def _detail_worker(browser, row_queue: "asyncio.Queue", results: list, job: dict):
     """워커마다 독립된 브라우저 컨텍스트(별도 세션/쿠키)를 발급받아 큐를 처리.
 
     K-apt 상세/첨부는 컨텍스트의 HTTP 요청으로, 외부 대행사 원문은 같은 컨텍스트의 브라우저 탭으로
@@ -164,29 +174,41 @@ async def _detail_worker(browser, row_queue: "asyncio.Queue", results: list, job
     parse_tasks: list[asyncio.Task] = []
     try:
         await step1_search.establish_session(detail_page)
-        while True:
+        while "blocked" not in job:
             try:
                 idx, row = row_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
+            if detail := _load_cached_detail(row["bid_num"]):
+                parse_tasks.append(asyncio.create_task(_parse_and_store(idx, row, detail, results, job)))
+                continue
             detail = None
             for attempt in range(FETCH_ATTEMPTS):
+                # 실패한 시도가 남긴 파일이 저장본에 섞이지 않도록 매번 비우고 받는다
+                shutil.rmtree(os.path.join(CACHE_DIR, row["bid_num"]), ignore_errors=True)
                 try:
                     detail = await step2_download.fetch_detail(
-                        detail_page, row["bid_num"], row["has_attachment"], job_dir
+                        detail_page, row["bid_num"], row["has_attachment"], CACHE_DIR
                     )
                     # 외부 원문 사이트 지연은 예외가 아니라 빈 파일 목록과 사유로 돌아온다
-                    if detail["files"]:
+                    if detail["files"] or detail["download_error"] in step2_download.PERMANENT_ERRORS:
                         break
+                except step1_search.KaptAccessBlocked as e:
+                    job["blocked"] = str(e)
+                    break
                 except Exception as e:
                     results[idx] = {**row, "success": False, "error": str(e)}
                 # 타임아웃 난 페이지 이동이 뒤늦게 끝나면서 다음 공고의 이동을 끊는 경우가 있어
                 # ("interrupted by another navigation") 페이지를 새로 만들어 다시 시도한다.
                 await detail_page.close()
                 detail_page = await context.new_page()
+            if "blocked" in job:
+                break
             if detail is None:
                 job["done"] += 1
                 continue
+            if detail["files"] and not detail["download_error"]:
+                _save_cached_detail(row["bid_num"], detail)
             parse_tasks.append(asyncio.create_task(_parse_and_store(idx, row, detail, results, job)))
     finally:
         await context.close()
@@ -210,16 +232,47 @@ def _cleanup_old_jobs():
     cutoff = time.time() - STORAGE_TTL_SEC
     for name in os.listdir(STORAGE_DIR):
         path = os.path.join(STORAGE_DIR, name)
+        if name.startswith("cache-"):
+            # 버전이 바뀐 옛 저장본은 통째로 지운다
+            if path != CACHE_DIR:
+                shutil.rmtree(path, ignore_errors=True)
+            continue
         if os.path.isdir(path) and os.path.getmtime(path) < cutoff:
             shutil.rmtree(path, ignore_errors=True)
             JOBS.pop(name, None)
+    cache_cutoff = time.time() - CACHE_TTL_SEC
+    for name in os.listdir(CACHE_DIR) if os.path.isdir(CACHE_DIR) else []:
+        path = os.path.join(CACHE_DIR, name)
+        if os.path.getmtime(path) < cache_cutoff:
+            shutil.rmtree(path, ignore_errors=True)
+
+
+def _load_cached_detail(bid_num: str) -> dict | None:
+    entry = os.path.join(CACHE_DIR, bid_num)
+    try:
+        with open(os.path.join(entry, CACHE_DETAIL_FILE), encoding="utf-8") as f:
+            detail = json.load(f)
+    except (OSError, ValueError):
+        return None
+    detail["files"] = [os.path.join(entry, name) for name in detail["files"]]
+    if not all(os.path.exists(path) for path in detail["files"]):
+        return None
+    return detail
+
+
+def _save_cached_detail(bid_num: str, detail: dict):
+    """첨부를 빠짐없이 받은 공고만 저장한다 (일부만 받았거나 실패한 공고는 다음 수집 때 다시 받음)."""
+    entry = os.path.join(CACHE_DIR, bid_num)
+    data = {**detail, "files": [os.path.relpath(path, entry) for path in detail["files"]]}
+    with open(os.path.join(entry, CACHE_DETAIL_FILE), "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
 
 
 async def _run_job(job_id: str, req: CollectRequest, job_dir: str):
     job = JOBS[job_id]
     try:
         results = await run_collect(
-            req.regions, req.keyword, req.date_start, req.date_end, job_dir, job
+            req.regions, req.keyword, req.date_start, req.date_end, job
         )
         if not results:
             job.update(status="error", message="검색 결과가 없습니다.")

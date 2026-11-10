@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "K-apt 낙찰 정보 수집",
-  description: "K-apt 아스콘 낙찰공고를 수집해 참가자격 요건을 정리하고 엑셀로 내려받습니다.",
+  title: "K-apt 낙찰 정보 수집기",
+  description: "K-apt 낙찰공고를 검색어로 수집해 참가자격 요건을 정리하고 엑셀로 내려받습니다.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

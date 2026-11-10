@@ -35,6 +35,8 @@ const NEEDS_CHECK_VALUE = "[확인 필요]";
 
 const NUMERIC_COLUMNS = new Set(["세대수", "낙찰금액"]);
 const LINK_COLUMN = "공고 링크";
+// 백엔드 step4_excel.GUIDE_KEY: 확인 필요 사유와 판단 기준 안내(줄바꿈 구분)
+const GUIDE_KEY = "_확인안내";
 const EMPTY_VALUE = "-";
 // 상태는 글자순이 아니라 확인이 급한 순서(실패 -> 확인 필요 -> 정상)로 정렬한다
 const KIND_RANK = { fail: 0, check: 1, ok: 2 };
@@ -144,7 +146,7 @@ export default function Home() {
 
   // 다른 탭에서 기다려도 진행·완료를 알 수 있게 탭 제목에 표시한다
   useEffect(() => {
-    const base = "K-apt 낙찰 정보 수집";
+    const base = "K-apt 낙찰 정보 수집기";
     document.title =
       status === "loading"
         ? `수집 중${progress?.total ? ` ${progress.done}/${progress.total}` : ""} · ${base}`
@@ -382,8 +384,8 @@ export default function Home() {
         <div className="mx-auto flex h-16 max-w-[1600px] items-center gap-3 px-4 sm:px-6">
           <LogoMark />
           <div className="min-w-0">
-            <p className="truncate text-[15px] font-bold tracking-tight text-ink">아스콘 낙찰 정보 수집기</p>
-            <p className="truncate text-xs text-muted">K-apt 낙찰공고 · 참가자격 요건 정리 · 엑셀 내려받기</p>
+            <p className="truncate text-[15px] font-bold tracking-tight text-ink">K-apt 낙찰 정보 수집기</p>
+            <p className="truncate text-xs text-muted">낙찰공고 검색 · 참가자격 요건 정리 · 엑셀 내려받기</p>
           </div>
         </div>
       </header>
@@ -837,6 +839,16 @@ export default function Home() {
                                       <p className={`inline-block rounded-lg px-3 py-2 text-[13px] font-medium ${KIND_STYLE[kind].pill}`}>
                                         {row["상태"]}
                                       </p>
+                                      {row[GUIDE_KEY] && (
+                                        <div className="mt-3 rounded-xl border border-warn/30 bg-warn-bg p-3">
+                                          <p className="text-xs font-semibold text-warn">왜 확인이 필요한가요?</p>
+                                          <ul className="mt-1.5 list-disc space-y-1.5 pl-4 text-[13px] leading-relaxed text-ink">
+                                            {row[GUIDE_KEY].split("\n").map((line) => (
+                                              <li key={line}>{line}</li>
+                                            ))}
+                                          </ul>
+                                        </div>
+                                      )}
                                       {evidence.length > 0 ? (
                                         <div className="mt-3 grid gap-2 md:grid-cols-2">
                                           {evidence.map(([col, text]) => (

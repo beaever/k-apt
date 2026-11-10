@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8420";
 
@@ -32,6 +32,40 @@ const stepOf = (message?: string) => (message?.includes("상세정보") ? 1 : 0)
 // 요건이 없다고 확인된 값은 흐리게, 사람이 봐야 하는 값은 강조해 한눈에 구분되게 한다
 const NOT_REQUIRED_VALUES = new Set(["제한없음", "미적용"]);
 const NEEDS_CHECK_VALUE = "[확인 필요]";
+
+const NUMERIC_COLUMNS = new Set(["세대수", "낙찰금액"]);
+const LINK_COLUMN = "공고 링크";
+const EMPTY_VALUE = "-";
+// 상태는 글자순이 아니라 확인이 급한 순서(실패 -> 확인 필요 -> 정상)로 정렬한다
+const KIND_RANK = { fail: 0, check: 1, ok: 2 };
+const collator = new Intl.Collator("ko", { numeric: true });
+
+const withoutKey = <T,>(obj: Record<string, T>, key: string) => {
+  const next = { ...obj };
+  delete next[key];
+  return next;
+};
+
+type SortDir = "asc" | "desc";
+type Sort = { col: string; dir: SortDir } | null;
+
+// 필터 목록·정렬에 쓰는 셀 값. 상태는 사유를 뺀 구분(정상/확인 필요/수집 실패)으로 묶는다.
+const cellValue = (row: ResultRow, col: string) =>
+  col === "상태" ? KIND_LABELS[rowKind(row)] : row[col] || EMPTY_VALUE;
+
+const compareRows = (a: ResultRow, b: ResultRow, { col, dir }: NonNullable<Sort>) => {
+  const va = cellValue(a, col);
+  const vb = cellValue(b, col);
+  // 빈 값은 방향과 관계없이 항상 맨 뒤
+  if (va === EMPTY_VALUE || vb === EMPTY_VALUE) return Number(va === EMPTY_VALUE) - Number(vb === EMPTY_VALUE);
+  const order =
+    col === "상태"
+      ? KIND_RANK[rowKind(a)] - KIND_RANK[rowKind(b)]
+      : NUMERIC_COLUMNS.has(col)
+        ? Number(va.replace(/[^\d.]/g, "")) - Number(vb.replace(/[^\d.]/g, ""))
+        : collator.compare(va, vb);
+  return dir === "asc" ? order : -order;
+};
 
 const formatElapsed = (sec: number) => (sec < 60 ? `${sec}초` : `${Math.floor(sec / 60)}분 ${sec % 60}초`);
 
@@ -102,6 +136,10 @@ export default function Home() {
   const [query, setQuery] = useState("");
   // 결과 표가 넓어 결과가 나오면 검색 조건 패널을 접는다 (큰 화면에서만, 작은 화면은 위아래로 쌓임)
   const [panelOpen, setPanelOpen] = useState(true);
+  const [sort, setSort] = useState<Sort>(null);
+  // 열별로 보여줄 값 목록. 열이 없으면 그 열은 거르지 않는다.
+  const [colFilters, setColFilters] = useState<Record<string, string[]>>({});
+  const [menu, setMenu] = useState<{ col: string; left: number; top: number } | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // 다른 탭에서 기다려도 진행·완료를 알 수 있게 탭 제목에 표시한다
@@ -152,6 +190,9 @@ export default function Home() {
     setQuery("");
     setOpenRow(null);
     setPanelOpen(false);
+    setSort(null);
+    setColFilters({});
+    setMenu(null);
     setStatus("done");
   };
 
@@ -288,7 +329,27 @@ export default function Home() {
   const q = query.trim();
   const visibleRows = rows
     .map((row, i) => ({ row, i, kind: rowKind(row) }))
-    .filter(({ row, kind }) => (filter === "all" || filter === kind) && (!q || columns.some((c) => row[c]?.includes(q))));
+    .filter(
+      ({ row, kind }) =>
+        (filter === "all" || filter === kind) &&
+        (!q || columns.some((c) => row[c]?.includes(q))) &&
+        Object.entries(colFilters).every(([c, allowed]) => allowed.includes(cellValue(row, c)))
+    );
+  if (sort) visibleRows.sort((a, b) => compareRows(a.row, b.row, sort));
+  const columnValues = (col: string) => {
+    const counts = new Map<string, number>();
+    for (const row of rows) counts.set(cellValue(row, col), (counts.get(cellValue(row, col)) ?? 0) + 1);
+    return [...counts.entries()].sort(([a], [b]) => collator.compare(a, b));
+  };
+  const toggleSort = (col: string) =>
+    setSort((cur) => (cur?.col !== col ? { col, dir: "asc" } : cur.dir === "asc" ? { col, dir: "desc" } : null));
+  const openMenu = (col: string, e: React.MouseEvent<HTMLButtonElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setMenu((cur) =>
+      cur?.col === col ? null : { col, left: Math.max(8, Math.min(rect.left, window.innerWidth - MENU_WIDTH - 8)), top: rect.bottom + 6 }
+    );
+  };
+  const activeFilterCount = Object.keys(colFilters).length;
 
   const rangeDays = (new Date(dateEnd).getTime() - new Date(dateStart).getTime()) / 86_400_000;
   const today = toDateInputValue(new Date());
@@ -305,7 +366,7 @@ export default function Home() {
     "h-10 w-full rounded-lg border border-line bg-surface px-3 text-sm text-ink outline-none transition-colors placeholder:text-subtle focus:border-primary focus:ring-2 focus:ring-primary/20";
   const labelClass = "mb-2 block text-[13px] font-semibold text-ink";
   const chip = (on: boolean) =>
-    "h-9 rounded-lg border px-3 text-[13px] font-medium transition-colors " +
+    "h-9 rounded-lg border px-3 text-[13px] font-medium transition-all duration-150 active:scale-[0.96] " +
     (on ? "border-primary bg-primary-soft text-primary" : "border-line bg-surface text-muted hover:border-subtle hover:text-ink");
 
   const cellTone = (value: string) =>
@@ -314,7 +375,6 @@ export default function Home() {
       : value.startsWith(NEEDS_CHECK_VALUE)
         ? "font-medium text-warn"
         : "text-ink";
-  const NUMERIC_COLUMNS = new Set(["세대수", "낙찰금액"]);
 
   return (
     <div className="min-h-screen bg-bg">
@@ -331,7 +391,7 @@ export default function Home() {
       <div
         className={`mx-auto grid max-w-[1600px] gap-6 px-4 py-6 sm:px-6 ${panelOpen ? "lg:grid-cols-[340px_minmax(0,1fr)]" : ""}`}
       >
-        <aside className={`lg:sticky lg:top-6 lg:self-start ${panelOpen ? "" : "lg:hidden"}`}>
+        <aside key={String(panelOpen)} className={`animate-fade-up lg:sticky lg:top-6 lg:self-start ${panelOpen ? "" : "lg:hidden"}`}>
           <form onSubmit={handleSubmit} className={`${card} p-5`}>
             <div className="flex items-center justify-between">
               <h2 className="text-base font-bold text-ink">검색 조건</h2>
@@ -394,7 +454,7 @@ export default function Home() {
                     aria-pressed={activeQuickRange === r.label}
                     onClick={() => applyQuickRange(r.days)}
                     className={
-                      "h-8 rounded-md text-[13px] font-medium transition-colors " +
+                      "h-8 rounded-md text-[13px] font-medium transition-all duration-200 active:scale-[0.96] " +
                       (activeQuickRange === r.label ? "bg-surface text-ink shadow-sm ring-1 ring-line" : "text-muted hover:text-ink")
                     }
                   >
@@ -423,7 +483,7 @@ export default function Home() {
                 />
               </div>
               {rangeDays > LONG_RANGE_DAYS && rangeDays <= 365 && (
-                <div className="mt-3 flex gap-2 rounded-lg bg-warn-bg p-3 text-xs leading-relaxed text-warn">
+                <div className="mt-3 flex animate-pop gap-2 rounded-lg bg-warn-bg p-3 text-xs leading-relaxed text-warn">
                   <AlertIcon />
                   <p>
                     {Math.round(rangeDays)}일은 수집에 수십 분이 걸려요. 짧은 시간에 여러 번 수집하면 K-apt 접속이 일시적으로 제한될 수
@@ -436,7 +496,7 @@ export default function Home() {
             <button
               type="submit"
               disabled={status === "loading" || regions.length === 0 || !keyword.trim()}
-              className="mt-6 flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-primary text-sm font-semibold text-primary-fg transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+              className="mt-6 flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-primary text-sm font-semibold text-primary-fg shadow-sm transition-all duration-150 hover:bg-primary-hover hover:shadow-md active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
             >
               {status === "loading" ? (
                 <>
@@ -458,7 +518,7 @@ export default function Home() {
 
         <main className="min-w-0">
           {status === "idle" && (
-            <section className={`${card} flex flex-col items-center px-6 py-16 text-center`}>
+            <section className={`${card} flex animate-fade-up flex-col items-center px-6 py-16 text-center`}>
               <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary-soft text-primary">
                 <SearchIcon size={26} />
               </span>
@@ -470,7 +530,11 @@ export default function Home() {
                   ["공고문 분석", "첨부된 공고문(HWP·PDF)에서 참가자격을 읽어요."],
                   ["확인 후 내려받기", "확인이 필요한 건만 근거와 함께 보고 엑셀로 받아요."],
                 ].map(([title, desc], i) => (
-                  <li key={title} className="rounded-xl border border-line bg-surface-2 p-4">
+                  <li
+                    key={title}
+                    style={{ animationDelay: `${120 + i * 80}ms` }}
+                    className="animate-fade-up rounded-xl border border-line bg-surface-2 p-4 transition-transform duration-200 hover:-translate-y-0.5"
+                  >
                     <span className="flex h-6 w-6 items-center justify-center rounded-full bg-brand text-xs font-bold text-white">
                       {i + 1}
                     </span>
@@ -483,7 +547,7 @@ export default function Home() {
           )}
 
           {status === "loading" && (
-            <section className={`${card} p-6`}>
+            <section className={`${card} animate-fade-up p-6`}>
               <div className="flex flex-wrap items-end justify-between gap-4">
                 <div>
                   <p className="text-xs font-semibold text-primary">수집 진행 중</p>
@@ -503,14 +567,19 @@ export default function Home() {
                 aria-valuenow={progress?.done ?? 0}
                 className="mt-4 h-2.5 overflow-hidden rounded-full bg-surface-2 ring-1 ring-line"
               >
-                <div className="h-full rounded-full bg-primary transition-[width] duration-500" style={{ width: `${percent}%` }} />
+                <div
+                  className="relative h-full overflow-hidden rounded-full bg-primary transition-[width] duration-700 ease-out"
+                  style={{ width: `${percent}%` }}
+                >
+                  <span className="absolute inset-0 animate-shimmer bg-gradient-to-r from-transparent via-white/40 to-transparent" />
+                </div>
               </div>
               <ol className="mt-6 grid gap-2 sm:grid-cols-3">
                 {STEPS.map((name, i) => (
                   <li
                     key={name}
                     className={
-                      "flex items-center gap-2 rounded-lg border px-3 py-2.5 text-[13px] " +
+                      "flex items-center gap-2 rounded-lg border px-3 py-2.5 text-[13px] transition-all duration-300 " +
                       (i === step
                         ? "border-primary bg-primary-soft font-semibold text-primary"
                         : i < step
@@ -531,7 +600,7 @@ export default function Home() {
           )}
 
           {status === "error" && (
-            <section role="alert" className={`${card} flex gap-4 border-bad/30 p-6`}>
+            <section role="alert" className={`${card} flex animate-fade-up gap-4 border-bad/30 p-6`}>
               <span className="flex h-10 w-10 flex-none items-center justify-center rounded-full bg-bad-bg text-bad">
                 <AlertIcon size={20} />
               </span>
@@ -553,7 +622,7 @@ export default function Home() {
           )}
 
           {status === "done" && jobId && (
-            <section className="flex flex-col gap-4">
+            <section className="flex animate-fade-up flex-col gap-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h2 className="text-lg font-bold text-ink">수집 결과</h2>
@@ -564,14 +633,14 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={() => setPanelOpen(true)}
-                    className="hidden h-10 items-center gap-2 rounded-lg border border-line bg-surface px-4 text-sm font-medium text-ink transition-colors hover:border-subtle lg:inline-flex"
+                    className="hidden h-10 items-center gap-2 rounded-lg border border-line bg-surface px-4 text-sm font-medium text-ink transition-all duration-150 hover:border-subtle active:scale-[0.97] lg:inline-flex"
                   >
                     <SearchIcon /> 조건 변경
                   </button>
                 )}
                 <a
                   href={`${API_BASE}/api/collect/${jobId}/download`}
-                  className="inline-flex h-10 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-fg transition-colors hover:bg-primary-hover"
+                  className="inline-flex h-10 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-fg shadow-sm transition-all duration-150 hover:bg-primary-hover hover:shadow-md active:scale-[0.97]"
                 >
                   <DownloadIcon /> 엑셀 다운로드
                 </a>
@@ -579,17 +648,18 @@ export default function Home() {
               </div>
 
               <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-                {filters.map((f) => (
+                {filters.map((f, idx) => (
                   <button
                     key={f.key}
                     type="button"
+                    style={{ animationDelay: `${idx * 60}ms` }}
                     aria-pressed={filter === f.key}
                     onClick={() => {
                       setFilter(f.key);
                       setOpenRow(null);
                     }}
                     className={
-                      `${card} p-4 text-left transition-all ` +
+                      `${card} animate-fade-up p-4 text-left transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md active:translate-y-0 active:scale-[0.99] ` +
                       (filter === f.key ? "border-primary ring-2 ring-primary/20" : "hover:border-subtle")
                     }
                   >
@@ -627,19 +697,67 @@ export default function Home() {
                       />
                     </div>
                     <span className="text-xs text-muted">{visibleRows.length}건</span>
-                    <span className="ml-auto hidden text-xs text-subtle md:block">행을 누르면 판단 근거가 펼쳐져요</span>
+                    {Object.entries(colFilters).map(([c, allowed]) => (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => setColFilters((cur) => withoutKey(cur, c))}
+                        className="inline-flex h-7 animate-pop items-center gap-1 rounded-full bg-primary-soft px-2.5 text-xs font-medium text-primary transition-opacity hover:opacity-80"
+                        aria-label={`${c} 필터 해제`}
+                      >
+                        {c === LINK_COLUMN ? "원문" : c}: {allowed.length <= 2 ? allowed.join(", ") : `${allowed.length}개`} ✕
+                      </button>
+                    ))}
+                    {(activeFilterCount > 0 || sort) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setColFilters({});
+                          setSort(null);
+                        }}
+                        className="h-7 rounded-md px-2 text-xs font-medium text-muted hover:bg-surface-2 hover:text-ink"
+                      >
+                        정렬·필터 초기화
+                      </button>
+                    )}
+                    <span className="ml-auto hidden text-xs text-subtle xl:block">제목을 누르면 정렬, ▾를 누르면 필터 · 행을 누르면 근거</span>
                   </div>
 
-                  <div className="max-h-[72vh] overflow-auto">
+                  <div className="max-h-[72vh] overflow-auto" onScroll={() => setMenu(null)}>
                     <table className="w-full text-left text-[13px]">
                       <thead className="sticky top-0 z-10 bg-surface-2 shadow-[inset_0_-1px_0_var(--line)]">
                         <tr>
                           {columns.map((c) => (
                             <th
                               key={c}
-                              className={`whitespace-nowrap px-2.5 py-2.5 text-xs font-semibold text-muted ${NUMERIC_COLUMNS.has(c) ? "text-right" : ""}`}
+                              aria-sort={sort?.col === c ? (sort.dir === "asc" ? "ascending" : "descending") : undefined}
+                              className="whitespace-nowrap px-1 py-1.5 text-xs font-semibold text-muted"
                             >
-                              {c === "공고 링크" ? "원문" : c}
+                              {c === LINK_COLUMN ? (
+                                <span className="px-1">원문</span>
+                              ) : (
+                                <div className={`flex items-center ${NUMERIC_COLUMNS.has(c) ? "justify-end" : ""}`}>
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleSort(c)}
+                                    title="눌러서 정렬 (오름차순 → 내림차순 → 해제)"
+                                    className={`flex items-center gap-1 rounded px-1 py-1 transition-colors hover:bg-line/60 hover:text-ink ${sort?.col === c ? "text-primary" : ""}`}
+                                  >
+                                    {c}
+                                    <SortIcon dir={sort?.col === c ? sort.dir : null} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    aria-label={`${c} 필터·정렬 메뉴`}
+                                    aria-haspopup="dialog"
+                                    aria-expanded={menu?.col === c}
+                                    onClick={(e) => openMenu(c, e)}
+                                    className={`flex h-6 w-5 items-center justify-center rounded transition-colors ${colFilters[c] ? "bg-primary-soft text-primary" : "text-subtle hover:bg-line/60 hover:text-ink"}`}
+                                  >
+                                    <FilterIcon active={!!colFilters[c]} />
+                                  </button>
+                                </div>
+                              )}
                             </th>
                           ))}
                         </tr>
@@ -652,14 +770,16 @@ export default function Home() {
                             </td>
                           </tr>
                         )}
-                        {visibleRows.map(({ row, i, kind }) => {
+                        {visibleRows.map(({ row, i, kind }, idx) => {
                           const isOpen = openRow === i;
                           const evidence = evidenceOf(row);
                           return (
                             <Fragment key={i}>
                               <tr
                                 onClick={() => setOpenRow(isOpen ? null : i)}
-                                className={`cursor-pointer border-t border-line transition-colors hover:bg-surface-2 ${KIND_STYLE[kind].row} ${isOpen ? "bg-surface-2" : ""}`}
+                                // 화면에 처음 보이는 행들만 차례로 나타나게 하고, 나머지는 기다리지 않게 지연을 제한
+                                style={{ animationDelay: `${Math.min(idx, 20) * 18}ms` }}
+                                className={`animate-fade-up cursor-pointer border-t border-line transition-colors hover:bg-surface-2 ${KIND_STYLE[kind].row} ${isOpen ? "bg-surface-2" : ""}`}
                               >
                                 {columns.map((c) =>
                                   c === "공고 링크" ? (
@@ -713,7 +833,7 @@ export default function Home() {
                                 <tr className="border-t border-line bg-surface-2">
                                   <td colSpan={columns.length} className="px-4 py-4">
                                     {/* 표가 옆으로 길어도 근거가 화면 왼쪽에 보이도록 고정 */}
-                                    <div className="sticky left-4 max-w-[min(60rem,calc(100vw-4rem))]">
+                                    <div className="sticky left-4 max-w-[min(60rem,calc(100vw-4rem))] animate-fade-up">
                                       <p className={`inline-block rounded-lg px-3 py-2 text-[13px] font-medium ${KIND_STYLE[kind].pill}`}>
                                         {row["상태"]}
                                       </p>
@@ -751,6 +871,27 @@ export default function Home() {
                     </table>
                   </div>
                 </div>
+              )}
+              {menu && (
+                <ColumnMenu
+                  key={menu.col}
+                  col={menu.col}
+                  left={menu.left}
+                  top={menu.top}
+                  values={columnValues(menu.col)}
+                  allowed={colFilters[menu.col]}
+                  sortDir={sort?.col === menu.col ? sort.dir : null}
+                  onSort={(dir) => {
+                    setSort(dir ? { col: menu.col, dir } : null);
+                    setMenu(null);
+                  }}
+                  onApply={(allowed) => {
+                    setColFilters((cur) => (allowed ? { ...cur, [menu.col]: allowed } : withoutKey(cur, menu.col)));
+                    setOpenRow(null);
+                    setMenu(null);
+                  }}
+                  onClose={() => setMenu(null)}
+                />
               )}
             </section>
           )}
@@ -824,4 +965,158 @@ function ChevronIcon({ open }: { open: boolean }) {
 
 function Spinner() {
   return <span className="h-4 w-4 flex-none animate-spin rounded-full border-2 border-current border-t-transparent" aria-hidden />;
+}
+
+const MENU_WIDTH = 280;
+
+// 엑셀 자동 필터처럼 열 값으로 정렬·거르기
+function ColumnMenu({
+  col,
+  left,
+  top,
+  values,
+  allowed,
+  sortDir,
+  onSort,
+  onApply,
+  onClose,
+}: {
+  col: string;
+  left: number;
+  top: number;
+  values: [string, number][];
+  allowed?: string[];
+  sortDir: SortDir | null;
+  onSort: (dir: SortDir | null) => void;
+  onApply: (allowed?: string[]) => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState(() => new Set(allowed ?? values.map(([v]) => v)));
+  const shown = useMemo(() => values.filter(([v]) => v.includes(search.trim())), [values, search]);
+  const allShownSelected = shown.every(([v]) => selected.has(v));
+
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    window.addEventListener("resize", onClose);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("resize", onClose);
+    };
+  }, [onClose]);
+
+  const toggle = (v: string) =>
+    setSelected((cur) => {
+      const next = new Set(cur);
+      if (next.has(v)) next.delete(v);
+      else next.add(v);
+      return next;
+    });
+  const sortButton = (dir: SortDir, label: string) => (
+    <button
+      type="button"
+      onClick={() => onSort(sortDir === dir ? null : dir)}
+      className={`flex h-8 flex-1 items-center justify-center gap-1 rounded-md border text-xs font-medium ${sortDir === dir ? "border-primary bg-primary-soft text-primary" : "border-line text-ink hover:bg-surface-2"}`}
+    >
+      <SortIcon dir={dir} /> {label}
+    </button>
+  );
+
+  return (
+    <div
+      ref={ref}
+      role="dialog"
+      aria-label={`${col} 정렬·필터`}
+      style={{ left, top, width: MENU_WIDTH }}
+      className="fixed z-50 origin-top-left animate-pop rounded-xl border border-line bg-surface p-3 text-sm text-ink shadow-[0_12px_32px_rgba(16,24,40,0.18)]"
+    >
+      <p className="text-xs font-semibold text-muted">{col}</p>
+      <div className="mt-2 flex gap-2">
+        {sortButton("asc", "오름차순")}
+        {sortButton("desc", "내림차순")}
+      </div>
+      <div className="my-3 border-t border-line" />
+      <input
+        type="search"
+        autoFocus
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="값 검색"
+        aria-label={`${col} 값 검색`}
+        className="h-8 w-full rounded-md border border-line bg-surface px-2.5 text-xs outline-none focus:border-primary"
+      />
+      <label className="mt-2 flex items-center gap-2 border-b border-line px-1 pb-2 text-xs font-medium">
+        <input
+          type="checkbox"
+          checked={shown.length > 0 && allShownSelected}
+          onChange={() =>
+            setSelected((cur) => {
+              const next = new Set(cur);
+              for (const [v] of shown) {
+                if (allShownSelected) next.delete(v);
+                else next.add(v);
+              }
+              return next;
+            })
+          }
+        />
+        {search.trim() ? "검색 결과 모두 선택" : "모두 선택"}
+      </label>
+      <ul className="mt-1 max-h-56 overflow-auto">
+        {shown.map(([v, count]) => (
+          <li key={v}>
+            <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-xs hover:bg-surface-2">
+              <input type="checkbox" checked={selected.has(v)} onChange={() => toggle(v)} />
+              <span className="min-w-0 flex-1 truncate" title={v}>
+                {v === EMPTY_VALUE ? "(빈 값)" : v}
+              </span>
+              <span className="text-subtle tabular-nums">{count}</span>
+            </label>
+          </li>
+        ))}
+        {shown.length === 0 && <li className="px-1 py-3 text-center text-xs text-subtle">일치하는 값이 없어요</li>}
+      </ul>
+      <div className="mt-3 flex gap-2">
+        <button
+          type="button"
+          onClick={() => onApply(undefined)}
+          className="h-8 flex-1 rounded-md border border-line text-xs font-medium hover:bg-surface-2"
+        >
+          필터 해제
+        </button>
+        <button
+          type="button"
+          disabled={selected.size === 0}
+          onClick={() => onApply(selected.size === values.length ? undefined : [...selected])}
+          className="h-8 flex-1 rounded-md bg-primary text-xs font-semibold text-primary-fg hover:bg-primary-hover disabled:opacity-50"
+        >
+          적용
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SortIcon({ dir }: { dir: SortDir | null }) {
+  return (
+    <svg width="10" height="12" viewBox="0 0 10 12" fill="none" aria-hidden className="flex-none">
+      <path d="M5 1 8 4.5H2L5 1Z" fill="currentColor" opacity={dir === "asc" ? 1 : 0.3} />
+      <path d="M5 11 2 7.5h6L5 11Z" fill="currentColor" opacity={dir === "desc" ? 1 : 0.3} />
+    </svg>
+  );
+}
+
+function FilterIcon({ active }: { active: boolean }) {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill={active ? "currentColor" : "none"} aria-hidden>
+      <path d="M1.5 2h9L7 6.2V10L5 9V6.2L1.5 2Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+    </svg>
+  );
 }

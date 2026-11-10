@@ -15,6 +15,10 @@ jobs:
 
       - name: start.bat 실행 후 두 서버가 뜰 때까지 대기
         shell: pwsh
+        env:
+          # 점검 서버는 영어(cp1252) 설정이라 파일로 받는 출력에 한글을 못 쓴다.
+          # 테스트 PC는 콘솔 창에 출력하므로 영향 없음. 화면 출력에만 적용돼 파일 읽기·쓰기 동작은 그대로다.
+          PYTHONIOENCODING: utf-8
         run: |
           Start-Process cmd.exe -ArgumentList '/c', 'start.bat > start.log 2>&1'
           $deadline = (Get-Date).AddMinutes(30)
@@ -27,11 +31,13 @@ jobs:
             } catch { Start-Sleep 10 }
           }
           Get-Content start.log -Tail 60
-          Get-ChildItem .launcher\*.log | ForEach-Object { Write-Host "== $_"; Get-Content $_ -Tail 60 }
+          Get-ChildItem .launcher\*.log -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "== $_"; Get-Content $_ -Tail 60 }
           exit 1
 
       - name: 화면이 열리고 검색 버튼이 동작 가능한지 확인
         shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
         run: |
           @'
           import asyncio
@@ -60,7 +66,7 @@ jobs:
       - name: 자체 점검 테스트 (설치된 Python으로)
         shell: pwsh
         env:
-          PYTHONUTF8: "1"
+          PYTHONIOENCODING: utf-8
         run: |
           backend\venv\Scripts\python.exe backend\tests\test_parsing.py
           if ($LASTEXITCODE) { exit 1 }

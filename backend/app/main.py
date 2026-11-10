@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import shutil
 import time
 import uuid
@@ -129,7 +130,8 @@ async def run_collect(
             if page_no > 1:
                 await step1_search.go_to_page(page, page_no)
             for row in await step1_search.scrape_list(page):
-                if row["bid_num"] not in seen_bid_nums:
+                # 공고번호가 없는 행은 서로 다른 공고일 수 있어 합치지 않는다 (워커가 실패로 남김)
+                if not _valid_bid_num(row["bid_num"]) or row["bid_num"] not in seen_bid_nums:
                     seen_bid_nums.add(row["bid_num"])
                     rows.append(row)
 
@@ -179,6 +181,11 @@ async def _detail_worker(browser, row_queue: "asyncio.Queue", results: list, job
                 idx, row = row_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
+            # 공고번호는 폴더 이름과 삭제 경로에 쓰인다 -> 빈 값이면 저장본 폴더 전체가 지워질 수 있다
+            if not _valid_bid_num(row["bid_num"]):
+                results[idx] = {**row, "success": False, "error": "목록에서 공고번호를 읽지 못함(K-apt 화면이 바뀌었을 수 있음)"}
+                job["done"] += 1
+                continue
             if detail := _load_cached_detail(row["bid_num"]):
                 parse_tasks.append(asyncio.create_task(_parse_and_store(idx, row, detail, results, job)))
                 continue
@@ -245,6 +252,11 @@ def _cleanup_old_jobs():
         path = os.path.join(CACHE_DIR, name)
         if os.path.getmtime(path) < cache_cutoff:
             shutil.rmtree(path, ignore_errors=True)
+
+
+def _valid_bid_num(bid_num) -> bool:
+    """K-apt 공고번호("20261001150247153")와 외부 대행사 번호("kg2b_141845") 형식만 허용."""
+    return isinstance(bid_num, str) and re.fullmatch(r"[\w-]+", bid_num, re.ASCII) is not None
 
 
 def _load_cached_detail(bid_num: str) -> dict | None:

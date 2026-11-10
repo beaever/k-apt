@@ -999,7 +999,9 @@ function ColumnMenu({
 
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) onClose();
+      // 메뉴를 연 ▾ 버튼은 클릭으로 직접 닫으므로 여기서 닫으면 곧바로 다시 열린다
+      const opener = (e.target as Element).closest?.("[aria-haspopup][aria-expanded='true']");
+      if (!ref.current?.contains(e.target as Node) && !opener) onClose();
     };
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     document.addEventListener("mousedown", onDown);

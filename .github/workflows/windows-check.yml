@@ -1,0 +1,83 @@
+# 테스트 PC(Windows)와 같은 방법으로 start.bat을 실행해 설치·서버 실행·화면 표시를 점검한다.
+# K-apt에는 접속하지 않는다 (수집 버튼을 누르지 않음).
+name: Windows 실행 점검
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: start.bat 실행 후 두 서버가 뜰 때까지 대기
+        shell: pwsh
+        env:
+          # 점검 서버는 영어(cp1252) 설정이라 파일로 받는 출력에 한글을 못 쓴다.
+          # 테스트 PC는 콘솔 창에 출력하므로 영향 없음. 화면 출력에만 적용돼 파일 읽기·쓰기 동작은 그대로다.
+          PYTHONIOENCODING: utf-8
+        run: |
+          Start-Process cmd.exe -ArgumentList '/c', 'start.bat > start.log 2>&1'
+          $deadline = (Get-Date).AddMinutes(30)
+          while ((Get-Date) -lt $deadline) {
+            try {
+              Invoke-WebRequest http://127.0.0.1:8420/docs -UseBasicParsing -TimeoutSec 5 | Out-Null
+              Invoke-WebRequest http://localhost:3000 -UseBasicParsing -TimeoutSec 180 | Out-Null
+              Write-Host "수집 서버·화면 서버 응답 확인"
+              exit 0
+            } catch { Start-Sleep 10 }
+          }
+          Get-Content start.log -Tail 60
+          Get-ChildItem .launcher\*.log -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "== $_"; Get-Content $_ -Tail 60 }
+          exit 1
+
+      - name: 화면이 열리고 검색 버튼이 동작 가능한지 확인
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          @'
+          import asyncio
+          from playwright.async_api import async_playwright
+
+          async def main():
+              async with async_playwright() as p:
+                  browser = await p.chromium.launch()
+                  page = await browser.new_page()
+                  errors = []
+                  page.on("pageerror", lambda e: errors.append(str(e)))
+                  await page.goto("http://localhost:3000", timeout=180000)
+                  button = page.locator("button[type=submit]")
+                  await button.wait_for(timeout=60000)
+                  assert await button.is_enabled(), "검색 버튼이 비활성"
+                  assert "아스콘 낙찰 정보 수집기" in await page.content()
+                  assert not errors, errors
+                  await page.screenshot(path="windows-screen.png", full_page=True)
+                  await browser.close()
+                  print("화면 확인 완료")
+
+          asyncio.run(main())
+          '@ | Set-Content -Encoding utf8 screen_check.py
+          backend\venv\Scripts\python.exe screen_check.py
+
+      - name: 자체 점검 테스트 (설치된 Python으로)
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          backend\venv\Scripts\python.exe backend\tests\test_parsing.py
+          if ($LASTEXITCODE) { exit 1 }
+          backend\venv\Scripts\python.exe backend\tests\test_launcher.py
+          if ($LASTEXITCODE) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-check
+          path: |
+            windows-screen.png
+            start.log
+            .launcher/*.log

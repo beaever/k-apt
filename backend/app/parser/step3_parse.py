@@ -103,6 +103,25 @@ def _ocr_pdf(path: str) -> str:
     return "\n".join(lines)
 
 
+def _cached_ocr_pdf(path: str) -> str:
+    """인식한 글자를 PDF 옆에 저장해 두고 재수집 때 다시 쓴다 (스캔 1건에 15~60초).
+
+    공고 저장본(main.CACHE_DIR)을 다시 받을 때 폴더째 지워지므로 원본과 어긋나지 않는다.
+    shortcut: OCR_MAX_PAGES나 인식 설정을 바꿔도 저장된 글자를 쓴다, 바꿀 때는 main.CACHE_DIR 버전을 올릴 것
+    """
+    cache = path + ".ocr.txt"
+    try:
+        with open(cache, encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        pass
+    text = _ocr_pdf(path)
+    if text.strip():
+        with open(cache, "w", encoding="utf-8") as f:
+            f.write(text)
+    return text
+
+
 def extract_text(path: str, ocr: bool = False) -> tuple[str, str | None]:
     """(추출된 텍스트, 실패 사유) 반환. 성공하면 실패 사유는 None. ocr이면 스캔 PDF를 글자 인식으로 읽는다."""
     ext = os.path.splitext(path)[1].lower()
@@ -118,10 +137,14 @@ def extract_text(path: str, ocr: bool = False) -> tuple[str, str | None]:
             return text, None
         if not ocr:
             return "", SCAN_PDF_ERROR
+        # 글자 쪽과 스캔 쪽이 섞인 PDF도 있어 이미 읽은 글자에 인식한 글자를 더한다
         try:
-            text = _ocr_pdf(path)
+            ocr_text = _cached_ocr_pdf(path)
         except Exception as e:
-            return "", f"스캔 PDF 글자 인식 실패({str(e)[:100]})"
+            if not text.strip():
+                return "", f"스캔 PDF 글자 인식 실패({str(e)[:100]})"
+            ocr_text = ""
+        text = f"{text}\n{ocr_text}"
         if not text.strip():
             return "", SCAN_PDF_ERROR
         return text, None
@@ -261,11 +284,15 @@ def parse_requirements(text: str) -> dict:
 
     # 특허번호는 "공법" 줄과 떨어진 줄(다음 줄 괄호, 제출서류 항목 등)에 적히는 경우가 많아
     # (실제 공고문 7건 중 3건) 키워드 줄이 아니라 문서 전체에서 등록번호 형식을 찾는다.
-    numbers = dict.fromkeys(f"{a}-{b}" for a, b in PATENT_NUMBER.findall("\n".join(lines)))
+    joined = "\n".join(lines)
+    numbers = dict.fromkeys(f"{a}-{b}" for a, b in PATENT_NUMBER.findall(joined))
     patent_evidence = ""
     if numbers:
         patent_no, patent_ok = ", ".join(numbers), True
-        patent_evidence = next(line for line in lines if PATENT_NUMBER.search(line))
+        # 번호가 "제10-" / "1234567호"처럼 두 줄에 걸칠 수 있어 번호가 걸친 줄 전체를 근거로 쓴다
+        m = PATENT_NUMBER.search(joined)
+        end = joined.find("\n", m.end())
+        patent_evidence = joined[joined.rfind("\n", 0, m.start()) + 1 : end if end >= 0 else None].replace("\n", " ")
     else:
         # 번호 없이 공법 이름만 있는 경우 -> 해당 줄을 "확인 필요"로 보여준다
         patent_no = next(

@@ -190,6 +190,10 @@ def build_excel(row_dicts: list[dict], out_path: str) -> None:
     for row_dict in row_dicts:
         ws.append([row_dict[c] for c in COLUMNS])
         row_no = ws.max_row
+        # openpyxl은 "="로 시작하는 글을 수식으로 저장한다 -> 공고문·K-apt 글은 항상 글자로 저장
+        for cell in ws[row_no]:
+            if cell.data_type == "f":
+                cell.data_type = "s"
         for col in (*PARSED_FIELDS, "세대수"):
             if evidence := row_dict.get(EVIDENCE_KEY + col):
                 cell = ws.cell(row=row_no, column=COLUMNS.index(col) + 1)

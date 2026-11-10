@@ -346,6 +346,103 @@ def test_cached_detail_round_trip_and_missing_file():
             main.CACHE_DIR = original
 
 
+def test_row_without_bid_num_fails_without_touching_cache():
+    """공고번호가 없거나 경로 문자가 섞인 행은 실패로 남기고, 저장본 폴더를 지우지 않는다."""
+    import asyncio
+
+    from app import main
+    from app.crawler import step1_search
+
+    assert main._valid_bid_num("20261001150247153") and main._valid_bid_num("kg2b_141845")
+    assert not any(main._valid_bid_num(v) for v in (None, "", "..", "../x", "a/b"))
+
+    class Context:
+        async def new_page(self):
+            return None
+
+        async def close(self):
+            pass
+
+    class Browser:
+        async def new_context(self, **kwargs):
+            return Context()
+
+    async def no_session(page):
+        pass
+
+    with tempfile.TemporaryDirectory() as d:
+        main.CACHE_DIR, original = d, main.CACHE_DIR
+        step1_search.establish_session, original_session = no_session, step1_search.establish_session
+        try:
+            open(os.path.join(d, "kept"), "w").close()
+            queue = asyncio.Queue()
+            rows = [{"bid_num": ""}, {"bid_num": None}]
+            for i, row in enumerate(rows):
+                queue.put_nowait((i, row))
+            results, job = [None, None], {"done": 0}
+            asyncio.run(main._detail_worker(Browser(), queue, results, job))
+            assert os.path.exists(os.path.join(d, "kept"))
+        finally:
+            main.CACHE_DIR = original
+            step1_search.establish_session = original_session
+    assert job["done"] == 2 and all(not r["success"] and "공고번호" in r["error"] for r in results)
+
+
+def test_patent_number_split_across_lines():
+    """특허번호가 두 줄에 걸쳐도 분석이 멈추지 않고, 걸친 두 줄을 근거로 남긴다."""
+    parsed = parse_requirements("특허 공법 제10-\n1234567호 보유업체")
+    assert parsed["patent_no"] == "10-1234567" and parsed["patent_no_found"]
+    assert parsed["patent_no_evidence"] == "특허 공법 제10- 1234567호 보유업체"
+
+
+def test_excel_keeps_text_starting_with_equals_as_text():
+    """공고문·K-apt 글이 "="로 시작해도 엑셀 수식이 되지 않는다."""
+    from openpyxl import load_workbook
+
+    from app.export.step4_excel import build_excel
+
+    row = to_row_dict({"bid_num": "1", "bid_title": "=HYPERLINK(\"http://x\")", "capital": "=== 자본금 ==="})
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "r.xlsx")
+        build_excel([row], path)
+        cells = list(load_workbook(path).active.iter_rows(min_row=2, values_only=False))[0]
+    assert all(c.data_type != "f" for c in cells)
+    assert '=HYPERLINK("http://x")' in [c.value for c in cells]
+
+
+def test_ocr_text_is_saved_and_mixed_pdf_keeps_its_text():
+    """글자가 조금 있는 PDF는 읽은 글자에 인식 글자를 더하고, 인식 결과는 저장해 다시 인식하지 않는다."""
+    calls = []
+    original = step3_parse._ocr_pdf
+    step3_parse._ocr_pdf = lambda path: calls.append(path) or "실적 5건 이상"
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "mixed.pdf")
+            _pdf_with_text(path, "capital 5")
+            first, _ = extract_text(path, ocr=True)
+            second, _ = extract_text(path, ocr=True)
+    finally:
+        step3_parse._ocr_pdf = original
+    assert "capital 5" in first and "실적 5건 이상" in first
+    assert first == second and len(calls) == 1
+
+    def broken(path):
+        raise RuntimeError("인식 실패")
+
+    step3_parse._ocr_pdf = broken
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "mixed.pdf")
+            _pdf_with_text(path, "capital 5")
+            text, err = extract_text(path, ocr=True)
+            parsed = parse_files([path], None, True)
+    finally:
+        step3_parse._ocr_pdf = original
+    assert "capital 5" in text and err is None
+    # 앞쪽만 읽었을 수 있어 "요건 없음"으로 단정하지 않는다
+    assert parsed["capital"] != step3_parse.NOT_APPLICABLE and parsed["ocr_used"]
+
+
 def test_hwp_table_content_extracted():
     """실제 K-apt 공고문 hwp: 참가자격(자본금/실적/특허)이 표 안에 들어있는 경우.
 

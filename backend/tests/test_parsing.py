@@ -388,6 +388,25 @@ def test_row_without_bid_num_fails_without_touching_cache():
     assert job["done"] == 2 and all(not r["success"] and "공고번호" in r["error"] for r in results)
 
 
+def test_record_requirement_in_complex_count_wins_over_document_line():
+    """래미안금광 공고(스캔, 글자 인식 결과): "실적" 없이 "N개 단지 이상"으로 쓴 요건 줄을 제출서류 줄보다 먼저 고른다."""
+    text = (
+        "3공고일현재자본금5억이상인업체\n"
+        "4입찰공고일로부터최근5년간500세대이상5개단지이상아스콘보도블럭공사완료\n업체\n"
+        "5제출서류\n"
+        "0실적증명서1부입찰마감일로부터최근5년실적단지명세대수연락처반드시기재\n"
+    )
+    parsed = parse_requirements(text)
+    assert parsed["record_found"] and "5개단지이상" in parsed["record"], parsed["record"]
+    assert to_row_dict({"bid_num": "1", **parsed, "record": parsed["record"]})["실적"] == "500세대 5개"
+
+    # 제출서류 줄밖에 없으면 그 줄을 쓰되 의심 사유를 붙인다
+    only_doc = parse_requirements("실적증명서 1부 (최근 3년 실적 3건 기재)")
+    assert only_doc["record_found"]
+    row = to_row_dict({"bid_num": "1", "success": True, **only_doc})
+    assert "제출서류 문장" in row["상태"]
+
+
 def test_patent_number_split_across_lines():
     """특허번호가 두 줄에 걸쳐도 분석이 멈추지 않고, 걸친 두 줄을 근거로 남긴다."""
     parsed = parse_requirements("특허 공법 제10-\n1234567호 보유업체")

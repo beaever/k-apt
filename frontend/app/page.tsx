@@ -144,7 +144,7 @@ export default function Home() {
 
   // 다른 탭에서 기다려도 진행·완료를 알 수 있게 탭 제목에 표시한다
   useEffect(() => {
-    const base = "K-apt 낙찰 정보 수집";
+    const base = "K-apt 낙찰 정보 수집기";
     document.title =
       status === "loading"
         ? `수집 중${progress?.total ? ` ${progress.done}/${progress.total}` : ""} · ${base}`
@@ -382,8 +382,8 @@ export default function Home() {
         <div className="mx-auto flex h-16 max-w-[1600px] items-center gap-3 px-4 sm:px-6">
           <LogoMark />
           <div className="min-w-0">
-            <p className="truncate text-[15px] font-bold tracking-tight text-ink">아스콘 낙찰 정보 수집기</p>
-            <p className="truncate text-xs text-muted">K-apt 낙찰공고 · 참가자격 요건 정리 · 엑셀 내려받기</p>
+            <p className="truncate text-[15px] font-bold tracking-tight text-ink">K-apt 낙찰 정보 수집기</p>
+            <p className="truncate text-xs text-muted">낙찰공고 검색 · 참가자격 요건 정리 · 엑셀 내려받기</p>
           </div>
         </div>
       </header>

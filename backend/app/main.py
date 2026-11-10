@@ -19,7 +19,7 @@ from app.crawler import step1_search, step2_download
 from app.export import step4_excel
 from app.parser import step3_parse
 
-app = FastAPI(title="K-apt 아스콘 입찰 정보 수집기")
+app = FastAPI(title="K-apt 낙찰 정보 수집기")
 
 # 배포 시 CORS_ORIGINS 환경변수(쉼표 구분)로 프런트엔드 주소를 제한할 수 있음.
 # 미설정 시 기존과 동일하게 전체 허용(로컬 개발용 기본값).

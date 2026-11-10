@@ -34,8 +34,10 @@ METHOD_KEYWORD = re.compile(r"공\s*법")
 METHOD_HINT = re.compile(r"시\s*공\s*(?:이\s*)?가\s*능|기\s*술\s*능\s*력")
 # 한국 특허(10-)/실용신안(20-) 등록번호 형식. 전화번호(010-...)·사업자번호에 걸리지 않도록 앞뒤 경계를 둔다.
 PATENT_NUMBER = re.compile(r"(?<![\d-])([12]0)\s*-\s*(\d{7})(?!\d)")
-# "실적" 단어 없이 "최근 N년간 ... M건 이상"으로만 표현되는 공고문 대비 폴백 패턴
-RECORD_FALLBACK = re.compile(r"최근\s*\d+\s*년간.*?\d+\s*건\s*이상")
+# "실적" 단어 없이 "최근 N년간 ... M건 이상" / "M개 단지 이상 ... 공사 완료"로만 표현되는 공고문 대비 폴백 패턴
+RECORD_FALLBACK = re.compile(r"최근\s*\d+\s*년간.*?\d+\s*(?:건|회|개\s*단\s*지)\s*이\s*상")
+# 참가자격 요건이 아니라 제출서류 목록("실적증명서 1부")의 줄. 요건 줄이 따로 있으면 그쪽을 고른다.
+DOCUMENT_LINE = re.compile(r"증명서|사본|협약서|\d+\s*부(?!\S)")
 RECENT_YEARS = re.compile(r"최근\s*\d+\s*년")
 
 # 요건이 "없다"고 판단할 때 쓰는 넓은 키워드. 이 중 하나라도 문서에 있으면 "해당 없음"으로 단정하지
@@ -233,12 +235,14 @@ def _find_line(lines: list[str], matches, is_valid, continues_from=None) -> tupl
     첫 키워드 줄이 "자본금 증명서 제출"처럼 값이 없는 줄이거나, "실적 5" / "건 이상"처럼
     값이 다음 줄로 잘린 경우가 있어, 최대 2줄까지 이어붙여 보며 조건을 만족할 때까지 계속 찾는다.
     끝까지 못 찾으면 첫 키워드 줄을 "확인 필요" 후보로 반환한다.
+    제출서류 줄("실적증명서 1부")은 값이 있어도 참가자격 요건 줄이 없을 때만 쓴다
+    (실측: 래미안금광 공고가 요건 줄보다 제출서류 줄을 먼저 뽑음). 그 경우 엑셀 상태에 의심 사유가 붙는다.
     항목 이름만 나열한 제목 줄(HEADING_LIST)은 후보에서 제외한다.
 
     continues_from: 키워드가 줄바꿈된 뒷줄에만 있는 경우("라. 최근 5년간 ... 보수공사(" / "실적) 3건 이상")
     바로 앞줄이 이 패턴을 포함하고 현재 줄이 새 번호 항목이 아니면 앞줄을 붙여 요건 문장 전체를 얻는다.
     """
-    fallback = ""
+    fallback = document_match = ""
     for i, line in enumerate(lines):
         if not matches(line) or HEADING_LIST.search(line):
             continue
@@ -255,9 +259,19 @@ def _find_line(lines: list[str], matches, is_valid, continues_from=None) -> tupl
             if nxt is not None:
                 merged = f"{merged} {nxt}"
             if is_valid(merged):
-                return merged, True
+                if not is_document_line(merged):
+                    return merged, True
+                document_match = document_match or merged
+                break
         fallback = fallback or _merge_until_digit(lines, i)
+    if document_match:
+        return document_match, True
     return fallback, False
+
+
+def is_document_line(sentence: str) -> bool:
+    """제출서류 목록에서 뽑힌 문장인지. "이상"이 있으면 요건을 함께 적은 줄로 본다."""
+    return bool(DOCUMENT_LINE.search(sentence)) and "이상" not in sentence
 
 
 def normalize_amount(amount: str) -> str:

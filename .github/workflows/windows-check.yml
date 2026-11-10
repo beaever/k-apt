@@ -53,7 +53,7 @@ jobs:
                   button = page.locator("button[type=submit]")
                   await button.wait_for(timeout=60000)
                   assert await button.is_enabled(), "검색 버튼이 비활성"
-                  assert "아스콘 낙찰 정보 수집기" in await page.content()
+                  assert "K-apt 낙찰 정보 수집기" in await page.content()
                   assert not errors, errors
                   await page.screenshot(path="windows-screen.png", full_page=True)
                   await browser.close()

@@ -20,6 +20,7 @@ from app.parser.step3_parse import (
     CAPITAL_KEYWORD,
     NEEDS_CHECK_PREFIX,
     NOT_APPLICABLE,
+    is_document_line,
     normalize_amount,
 )
 
@@ -44,8 +45,6 @@ APT_SUFFIX = re.compile(r"\s*\(입대의\)\s*$")
 RECORD_YEARS = re.compile(r"(?<!\d)(\d{1,2})\s*(?:개\s*)?년")
 RECORD_HOUSEHOLDS = re.compile(r"(\d[\d,]*)\s*세대")
 RECORD_COUNT = re.compile(r"(\d+)\s*(?:[건회]|개(?!\s*년))")
-# 참가자격 요건이 아니라 제출서류 목록("실적증명서 1부")에서 뽑힌 문장일 가능성
-DOCUMENT_LINE = re.compile(r"증명서|사본|협약서|\d+\s*부(?!\S)")
 AMOUNT_UNITS = {"억": 1, "천만": 0.1, "백만": 0.01, "만": 0.0001}
 # 아파트 도로포장 입찰에서 상식적인 요건 범위. 벗어나면 숫자를 잘못 읽었을 가능성이 크다.
 # ponytail: 고정 범위 -> 다른 공종(대형 공사 등)으로 넓히면 범위 조정 필요
@@ -107,7 +106,7 @@ def _suspicions(r: dict, capital: str, record: str) -> list[str]:
         reasons.append(f"실적 {count.group()}은 일반적인 범위를 벗어남")
     for col, key in (("자본금", "capital"), ("실적", "record")):
         sentence = r.get(key, "")
-        if r.get(f"{key}_found") and DOCUMENT_LINE.search(sentence) and "이상" not in sentence:
+        if r.get(f"{key}_found") and is_document_line(sentence):
             reasons.append(f"{col}이 제출서류 문장에서 뽑혔을 수 있음")
     return reasons
 

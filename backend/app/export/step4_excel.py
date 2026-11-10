@@ -90,24 +90,77 @@ def _amount_in_eok(amount: str) -> float | None:
     return number * AMOUNT_UNITS[m.group(2)] if m.group(2) else number / 1e8
 
 
-def _suspicions(r: dict, capital: str, record: str) -> list[str]:
-    """값은 찾았지만 오인 가능성이 있는 신호들."""
+# 확인 필요 사유를 사용자가 이해할 수 있도록, 값으로 인정하는 기준을 그대로 안내한다 (step3_parse의 규칙과 맞출 것)
+FIELD_RULES = {
+    "자본금": "자본금은 '자본금' 단어가 있는 줄에서, 같은 줄이나 바로 다음 2줄에 금액(예: 5억, 3천만원, 쉼표가 있는 500,000,000원)이 있을 때만 값으로 인정해요.",
+    "실적": (
+        "실적 요건 줄은 두 가지만 인정해요. "
+        "① '실적' 단어가 있고 건수·횟수·금액(예: 3건, 5회, 10억원)이 같은 줄이나 바로 다음 2줄에 있는 줄, "
+        "② '최근 N년간 … M건 / M회 / M개 단지 이상' 형식의 줄이에요."
+    ),
+    "공법번호": "공법번호는 특허·실용신안 등록번호(10-1234567 또는 20-1234567 형식)가 공고문에 있을 때만 인정해요.",
+}
+MISSING_INFO_GUIDES = {
+    "세대수": "세대수: K-apt 상세페이지에 세대수가 없거나 0으로 등록돼 있고, 공고문에서도 '단지규모 … N세대' 같은 문구를 찾지 못했어요.",
+}
+# 확인 필요 안내 문장(줄바꿈으로 구분). 웹 결과에서 행을 펼치면 보이고, 엑셀에서는 상태 칸 메모로 붙는다.
+GUIDE_KEY = "_확인안내"
+
+
+def _not_found_guide(r: dict, col: str, value: str) -> tuple[str, str]:
+    """요건 값을 확정하지 못한 칸의 (짧은 사유, 안내)."""
+    if value.startswith(NEEDS_CHECK_PREFIX):
+        sentence = value.removeprefix(NEEDS_CHECK_PREFIX)
+        return f"{col} 기준에 맞는 줄 없음", (
+            f"{col}: {FIELD_RULES[col]} 이 공고문에는 기준에 맞는 줄이 없어, 가장 가까운 문장"
+            f"('{sentence[:60]}')을 대신 보여드려요. 원문에서 {col} 요건을 직접 확인해 주세요."
+        )
+    if r.get("ocr_used"):
+        why = "스캔 PDF는 앞 2쪽만 글자 인식으로 읽어 뒤쪽에 요건이 있을 수 있어"
+    elif r.get("extract_errors"):
+        why = "읽지 못한 첨부파일에 요건이 있을 수 있어"
+    else:
+        why = "공고문 다른 곳에 관련 단어(예: 최근 N년간, 공법, 신기술, 실용신안)가 있어"
+    return f"{col} 관련 문구 없음", (
+        f"{col}: 공고문에서 {col} 요건 문장을 찾지 못했어요. {why} '제한없음'으로 단정하지 않았어요. 원문을 확인해 주세요."
+    )
+
+
+def _suspicions(r: dict, capital: str, record: str) -> list[tuple[str, str]]:
+    """값은 찾았지만 오인 가능성이 있는 신호들. (짧은 사유, 안내) 목록."""
     reasons = []
     if r.get("ocr_used"):
-        reasons.append("스캔 PDF를 글자 인식으로 읽어 원문 대조 필요")
+        reasons.append((
+            "스캔 PDF(글자 인식)",
+            "이 공고문은 스캔(이미지) PDF라 글자 인식으로 읽었어요. 글자 인식은 숫자·글자를 잘못 읽을 수 있어, "
+            "값을 찾았더라도 원문과 한 번 대조해 주세요.",
+        ))
     amounts = r.get("capital_amounts") or []
     if len(amounts) > 1:
-        reasons.append(f"공고문에 자본금 금액이 여러 개({', '.join(amounts)})")
+        reasons.append((
+            f"자본금 금액이 여러 개({', '.join(amounts)})",
+            f"공고문에 자본금 금액이 여러 개({', '.join(amounts)}) 나와, 어느 금액이 참가 요건인지 정할 수 없어요.",
+        ))
     eok = _amount_in_eok(capital)
     if eok is not None and not CAPITAL_RANGE_EOK[0] <= eok <= CAPITAL_RANGE_EOK[1]:
-        reasons.append(f"자본금 {capital}은 일반적인 범위를 벗어남")
+        reasons.append((
+            f"자본금 {capital} 일반 범위 밖",
+            f"자본금 {capital}은 일반적인 범위(1천만원~50억)를 벗어나, 숫자를 잘못 읽었을 수 있어요.",
+        ))
     count = RECORD_COUNT.search(record)
     if count and not 1 <= int(count.group(1)) <= RECORD_MAX_COUNT:
-        reasons.append(f"실적 {count.group()}은 일반적인 범위를 벗어남")
+        reasons.append((
+            f"실적 {count.group()} 일반 범위 밖",
+            f"실적 {count.group()}은 일반적인 범위(1~{RECORD_MAX_COUNT})를 벗어나, 숫자를 잘못 읽었을 수 있어요.",
+        ))
     for col, key in (("자본금", "capital"), ("실적", "record")):
         sentence = r.get(key, "")
         if r.get(f"{key}_found") and is_document_line(sentence):
-            reasons.append(f"{col}이 제출서류 문장에서 뽑혔을 수 있음")
+            reasons.append((
+                f"{col}이 제출서류 문장에서 뽑힘",
+                f"{col}: 참가자격 요건 줄을 찾지 못해 제출서류 목록(예: 실적증명서 1부)의 문장에서 값을 뽑았어요. "
+                f"제출서류 문장은 요건이 아닐 수 있어요. {FIELD_RULES[col]}",
+            ))
     return reasons
 
 
@@ -160,13 +213,20 @@ def to_row_dict(r: dict) -> dict:
             key = PARSED_FIELDS.get(col)
             if key is None:
                 if not value:
-                    reasons.append(f"{col} 정보 없음")
+                    guide = MISSING_INFO_GUIDES.get(col, f"{col}: K-apt 목록·상세페이지에 {col} 값이 없어요.")
+                    reasons.append((f"{col} 정보 없음", guide))
             elif not r.get(f"{key}_found", bool(value)):
-                reasons.append(f"{col}({value or '값 없음'})")
+                reasons.append(_not_found_guide(r, col, value))
         reasons += _suspicions(r, capital, record)
         if r.get("extract_errors"):
-            reasons.append("일부 첨부파일을 읽지 못함(" + "; ".join(r["extract_errors"]) + ")")
-        status = f"{STATUS_CHECK}: " + " / ".join(reasons) if reasons else STATUS_OK
+            errors = "; ".join(r["extract_errors"])
+            reasons.append((
+                "일부 첨부파일을 읽지 못함",
+                f"첨부파일 중 일부를 읽지 못했어요({errors}). 읽지 못한 파일에 요건이 있을 수 있어요.",
+            ))
+        status = f"{STATUS_CHECK}: " + " / ".join(short for short, _ in reasons) if reasons else STATUS_OK
+        if reasons:
+            values[GUIDE_KEY] = "\n".join(guide for _, guide in reasons)
 
     bid_num = r.get("bid_num")
     values["공고 링크"] = DETAIL_URL_TMPL.format(bid_num=bid_num) if bid_num else ""
@@ -207,6 +267,9 @@ def build_excel(row_dicts: list[dict], out_path: str) -> None:
         for cell in ws[row_no]:
             cell.fill = fill
         status_cell.font = font
+        if guide := row_dict.get(GUIDE_KEY):
+            text = "왜 확인이 필요한가요?\n" + "\n".join(f"• {line}" for line in guide.split("\n"))
+            status_cell.comment = Comment(text, "수집기", width=520, height=min(600, 60 + len(text) // 2))
         # 확인이 필요한 행만 아파트명에 K-apt 원문 링크를 건다
         if row_dict.get("공고 링크"):
             apt_cell = ws.cell(row=row_no, column=COLUMNS.index("아파트명") + 1)

@@ -407,6 +407,37 @@ def test_record_requirement_in_complex_count_wins_over_document_line():
     assert "제출서류 문장" in row["상태"]
 
 
+def test_check_reason_explains_the_rule():
+    """확인 필요 행은 짧은 사유와 함께, 값으로 인정하는 기준까지 안내한다 (엑셀은 상태 칸 메모)."""
+    from openpyxl import load_workbook
+
+    from app.export.step4_excel import GUIDE_KEY, build_excel
+
+    # 래미안금광 공고를 고치기 전처럼: 실적 요건 줄을 못 찾고 제출서류 줄만 후보로 남은 경우
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "공고.pdf")
+        original = step3_parse.extract_text
+        step3_parse.extract_text = lambda p, ocr=False: ("자본금 5억 이상\n실적증명서 제출\n특허 제10-2222229호", None)
+        try:
+            parsed = parse_files([path], None, True)
+        finally:
+            step3_parse.extract_text = original
+    base = {"bid_num": "1", "success": True, "announce_date": "2026-10-08", "apt_name": "래미안금광", "work_name": "공사",
+            "household_count": "1098", "bid_method": "최저 낙찰", "winner": "업체", "bid_amount": "1"}
+    row = to_row_dict({**base, **parsed})
+    assert row["상태"] == "확인 필요: 실적 기준에 맞는 줄 없음 / 스캔 PDF(글자 인식)", row["상태"]
+    guide = row[GUIDE_KEY].split("\n")
+    assert "두 가지만 인정" in guide[0] and "M개 단지 이상" in guide[0] and "실적증명서 제출" in guide[0], guide
+    assert "글자 인식" in guide[1]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "r.xlsx")
+        build_excel([row], path)
+        ws = load_workbook(path).active
+        status = ws.cell(row=2, column=ws.max_column)
+    assert status.comment and "왜 확인이 필요한가요?" in status.comment.text and "두 가지만 인정" in status.comment.text
+
+
 def test_patent_number_split_across_lines():
     """특허번호가 두 줄에 걸쳐도 분석이 멈추지 않고, 걸친 두 줄을 근거로 남긴다."""
     parsed = parse_requirements("특허 공법 제10-\n1234567호 보유업체")

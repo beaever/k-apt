@@ -20,16 +20,15 @@ const QUICK_RANGES = [
 const LONG_RANGE_DAYS = 90;
 const KAPT_URL = "https://www.k-apt.go.kr";
 const KIND_LABELS = { ok: "정상", check: "확인 필요", fail: "수집 실패" } as const;
-const KIND_BADGE = {
-  ok: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
-  check: "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300",
-  fail: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
+const KIND_STYLE = {
+  ok: { pill: "bg-ok-bg text-ok", dot: "bg-ok", row: "" },
+  check: { pill: "bg-warn-bg text-warn", dot: "bg-warn", row: "bg-warn-bg/40" },
+  fail: { pill: "bg-bad-bg text-bad", dot: "bg-bad", row: "bg-bad-bg/40" },
 };
-const KIND_ROW = {
-  ok: "border-black/[.06] hover:bg-black/[.02] dark:border-white/[.08] dark:hover:bg-white/[.04]",
-  check: "border-amber-200 bg-amber-50/60 hover:bg-amber-50 dark:border-amber-900/40 dark:bg-amber-950/30",
-  fail: "border-red-200 bg-red-50/60 hover:bg-red-50 dark:border-red-900/40 dark:bg-red-950/30",
-};
+// 진행 메시지(백엔드 job.message)로 지금 어느 단계인지 표시한다
+const STEPS = ["목록 검색", "공고문 분석", "엑셀 생성"];
+const stepOf = (message?: string) => (message?.includes("상세정보") ? 1 : 0);
+
 // 요건이 없다고 확인된 값은 흐리게, 사람이 봐야 하는 값은 강조해 한눈에 구분되게 한다
 const NOT_REQUIRED_VALUES = new Set(["제한없음", "미적용"]);
 const NEEDS_CHECK_VALUE = "[확인 필요]";
@@ -101,6 +100,8 @@ export default function Home() {
   const [filter, setFilter] = useState<Filter>("all");
   const [openRow, setOpenRow] = useState<number | null>(null);
   const [query, setQuery] = useState("");
+  // 결과 표가 넓어 결과가 나오면 검색 조건 패널을 접는다 (큰 화면에서만, 작은 화면은 위아래로 쌓임)
+  const [panelOpen, setPanelOpen] = useState(true);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // 다른 탭에서 기다려도 진행·완료를 알 수 있게 탭 제목에 표시한다
@@ -150,6 +151,7 @@ export default function Home() {
     setFilter("all");
     setQuery("");
     setOpenRow(null);
+    setPanelOpen(false);
     setStatus("done");
   };
 
@@ -273,11 +275,11 @@ export default function Home() {
           "공고 링크",
         ]
       : [];
-  const filters: { key: Filter; label: string; count: number; tone: string }[] = [
-    { key: "all", label: "전체", count: rows.length, tone: "text-black dark:text-zinc-50" },
-    { key: "ok", label: "정상", count: successCount, tone: "text-green-700 dark:text-green-400" },
-    { key: "check", label: "확인 필요", count: checkCount, tone: "text-amber-600 dark:text-amber-400" },
-    { key: "fail", label: "수집 실패", count: failCount, tone: "text-red-600 dark:text-red-400" },
+  const filters: { key: Filter; label: string; count: number; dot: string; tone: string }[] = [
+    { key: "all", label: "전체", count: rows.length, dot: "bg-subtle", tone: "text-ink" },
+    { key: "ok", label: "정상", count: successCount, dot: "bg-ok", tone: "text-ok" },
+    { key: "check", label: "확인 필요", count: checkCount, dot: "bg-warn", tone: "text-warn" },
+    { key: "fail", label: "수집 실패", count: failCount, dot: "bg-bad", tone: "text-bad" },
   ];
   const evidenceOf = (row: ResultRow) =>
     Object.entries(row)
@@ -295,88 +297,121 @@ export default function Home() {
     start.setDate(start.getDate() - r.days);
     return dateEnd === today && dateStart === toDateInputValue(start);
   })?.label;
+  const step = status === "loading" ? stepOf(progress?.message) : 0;
+  const percent = progress?.total ? Math.floor((progress.done / progress.total) * 100) : 0;
 
+  const card = "rounded-2xl border border-line bg-surface shadow-[0_1px_2px_rgba(16,24,40,0.04)]";
   const inputClass =
-    "w-full rounded-lg border border-black/[.08] bg-transparent px-3 py-2 text-sm text-black outline-none focus:border-black/40 dark:border-white/[.145] dark:text-zinc-50";
-  const labelClass = "mb-2 block text-sm font-medium text-black dark:text-zinc-50";
+    "h-10 w-full rounded-lg border border-line bg-surface px-3 text-sm text-ink outline-none transition-colors placeholder:text-subtle focus:border-primary focus:ring-2 focus:ring-primary/20";
+  const labelClass = "mb-2 block text-[13px] font-semibold text-ink";
+  const chip = (on: boolean) =>
+    "h-9 rounded-lg border px-3 text-[13px] font-medium transition-colors " +
+    (on ? "border-primary bg-primary-soft text-primary" : "border-line bg-surface text-muted hover:border-subtle hover:text-ink");
 
   const cellTone = (value: string) =>
     NOT_REQUIRED_VALUES.has(value)
-      ? "text-zinc-400 dark:text-zinc-500"
+      ? "text-subtle"
       : value.startsWith(NEEDS_CHECK_VALUE)
-        ? "text-amber-700 dark:text-amber-400"
-        : "text-zinc-700 dark:text-zinc-300";
+        ? "font-medium text-warn"
+        : "text-ink";
+  const NUMERIC_COLUMNS = new Set(["세대수", "낙찰금액"]);
 
   return (
-    <div className="flex min-h-screen justify-center bg-zinc-50 px-3 py-12 sm:px-4 dark:bg-black">
-      <main className={`w-full ${rows.length > 0 ? "max-w-[1600px]" : "max-w-3xl"} rounded-2xl border border-black/[.08] bg-white p-6 sm:p-8 dark:border-white/[.145] dark:bg-zinc-900`}>
-        <h1 className="text-xl font-semibold text-black dark:text-zinc-50">
-          K-apt 낙찰 정보 수집
-        </h1>
-        <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-          조건에 맞는 낙찰공고를 검색하고 엑셀로 내려받습니다.
-        </p>
-
-        <form onSubmit={handleSubmit} className="mt-6 grid gap-5 md:grid-cols-2">
-          <fieldset>
-            <legend className={labelClass}>지역</legend>
-            <div className="flex h-[38px] items-center gap-4">
-              {REGIONS.map((r) => (
-                <label key={r} className="flex items-center gap-1.5 text-sm text-zinc-700 dark:text-zinc-300">
-                  <input
-                    type="checkbox"
-                    checked={regions.includes(r)}
-                    onChange={() => toggleRegion(r)}
-                  />
-                  {r}
-                </label>
-              ))}
-            </div>
-          </fieldset>
-
-          <div>
-            <label htmlFor="keyword" className={labelClass}>
-              검색어
-            </label>
-            <input
-              id="keyword"
-              type="text"
-              value={keyword}
-              onChange={(e) => setKeyword(e.target.value)}
-              placeholder="예: 아스콘"
-              className={inputClass}
-            />
+    <div className="min-h-screen bg-bg">
+      <header className="border-b border-line bg-surface">
+        <div className="mx-auto flex h-16 max-w-[1600px] items-center gap-3 px-4 sm:px-6">
+          <LogoMark />
+          <div className="min-w-0">
+            <p className="truncate text-[15px] font-bold tracking-tight text-ink">아스콘 낙찰 정보 수집기</p>
+            <p className="truncate text-xs text-muted">K-apt 낙찰공고 · 참가자격 요건 정리 · 엑셀 내려받기</p>
           </div>
+        </div>
+      </header>
 
-          <fieldset className="md:col-span-2">
-            <legend className={labelClass}>기간 (최대 1년)</legend>
-            <div className="flex flex-wrap items-center gap-2">
-              {QUICK_RANGES.map((r) => (
+      <div
+        className={`mx-auto grid max-w-[1600px] gap-6 px-4 py-6 sm:px-6 ${panelOpen ? "lg:grid-cols-[340px_minmax(0,1fr)]" : ""}`}
+      >
+        <aside className={`lg:sticky lg:top-6 lg:self-start ${panelOpen ? "" : "lg:hidden"}`}>
+          <form onSubmit={handleSubmit} className={`${card} p-5`}>
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-bold text-ink">검색 조건</h2>
+              {rows.length > 0 && (
                 <button
-                  key={r.label}
                   type="button"
-                  aria-pressed={activeQuickRange === r.label}
-                  onClick={() => applyQuickRange(r.days)}
-                  className={
-                    "rounded-full border px-3 py-1.5 text-xs transition-colors " +
-                    (activeQuickRange === r.label
-                      ? "border-foreground bg-foreground text-background"
-                      : "border-black/[.08] text-zinc-600 hover:bg-black/[.04] dark:border-white/[.145] dark:text-zinc-300 dark:hover:bg-white/[.08]")
-                  }
+                  onClick={() => setPanelOpen(false)}
+                  className="hidden h-7 rounded-md px-2 text-xs font-medium text-muted hover:bg-surface-2 hover:text-ink lg:block"
                 >
-                  최근 {r.label}
+                  접기 ←
                 </button>
-              ))}
-              <div className="flex min-w-[280px] flex-1 items-center gap-2">
+              )}
+            </div>
+            <p className="mt-1 text-xs text-muted">조건을 정하고 검색을 누르면 공고문까지 자동으로 분석해요.</p>
+
+            <fieldset className="mt-5">
+              <legend className={labelClass}>지역</legend>
+              <div className="grid grid-cols-3 gap-2">
+                {REGIONS.map((r) => (
+                  <button
+                    key={r}
+                    type="button"
+                    aria-pressed={regions.includes(r)}
+                    onClick={() => toggleRegion(r)}
+                    className={chip(regions.includes(r))}
+                  >
+                    {regions.includes(r) && <CheckIcon />}
+                    {r}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+
+            <div className="mt-5">
+              <label htmlFor="keyword" className={labelClass}>
+                검색어
+              </label>
+              <div className="relative">
+                <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-subtle">
+                  <SearchIcon />
+                </span>
+                <input
+                  id="keyword"
+                  type="text"
+                  value={keyword}
+                  onChange={(e) => setKeyword(e.target.value)}
+                  placeholder="예: 아스콘"
+                  className={`${inputClass} pl-9`}
+                />
+              </div>
+            </div>
+
+            <fieldset className="mt-5">
+              <legend className={labelClass}>기간 (최대 1년)</legend>
+              <div className="grid grid-cols-3 gap-1 rounded-lg bg-surface-2 p-1 ring-1 ring-line">
+                {QUICK_RANGES.map((r) => (
+                  <button
+                    key={r.label}
+                    type="button"
+                    aria-pressed={activeQuickRange === r.label}
+                    onClick={() => applyQuickRange(r.days)}
+                    className={
+                      "h-8 rounded-md text-[13px] font-medium transition-colors " +
+                      (activeQuickRange === r.label ? "bg-surface text-ink shadow-sm ring-1 ring-line" : "text-muted hover:text-ink")
+                    }
+                  >
+                    최근 {r.label}
+                  </button>
+                ))}
+              </div>
+              <div className="mt-2 grid grid-cols-[1fr_auto_1fr] items-center gap-2">
                 <input
                   type="date"
                   aria-label="시작일"
                   value={dateStart}
                   max={dateEnd}
                   onChange={(e) => setDateStart(e.target.value)}
-                  className={inputClass}
+                  className={`${inputClass} px-2 text-[13px]`}
                 />
-                <span className="text-sm text-zinc-500 dark:text-zinc-400">~</span>
+                <span className="text-sm text-subtle">~</span>
                 <input
                   type="date"
                   aria-label="종료일"
@@ -384,260 +419,409 @@ export default function Home() {
                   min={dateStart}
                   max={today}
                   onChange={(e) => setDateEnd(e.target.value)}
-                  className={inputClass}
+                  className={`${inputClass} px-2 text-[13px]`}
                 />
               </div>
-            </div>
-            {rangeDays > LONG_RANGE_DAYS && rangeDays <= 365 && (
-              <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
-                기간이 {Math.round(rangeDays)}일로 길어요. 수집에 수십 분이 걸리고, 짧은 시간에 여러 번 수집하면 K-apt 접속이
-                일시적으로 제한될 수 있어요.
-              </p>
-            )}
-          </fieldset>
-
-          <button
-            type="submit"
-            disabled={status === "loading" || regions.length === 0 || !keyword.trim()}
-            className="flex h-11 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-colors hover:bg-[#383838] disabled:opacity-50 md:col-span-2 dark:hover:bg-[#ccc]"
-          >
-            {status === "loading"
-              ? `수집 중... (${formatElapsed(elapsed)} 경과)`
-              : regions.length === 0
-                ? "지역을 1개 이상 선택해 주세요"
-                : !keyword.trim()
-                  ? "검색어를 입력해 주세요"
-                  : "검색 시작"}
-          </button>
-        </form>
-
-        {status === "loading" && (
-          <div className="mt-5 rounded-xl border border-black/[.06] bg-zinc-50 p-4 dark:border-white/[.08] dark:bg-zinc-950">
-            <div className="flex items-center gap-2 text-sm text-zinc-600 dark:text-zinc-300">
-              <span className="h-3 w-3 flex-none animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-600 dark:border-zinc-600 dark:border-t-zinc-300" />
-              {progress?.message ?? "작업을 시작하는 중"}
-            </div>
-            {progress && progress.total > 0 && (
-              <>
-                <div
-                  role="progressbar"
-                  aria-label="공고 처리 진행률"
-                  aria-valuemin={0}
-                  aria-valuemax={progress.total}
-                  aria-valuenow={progress.done}
-                  className="mt-3 h-2 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800"
-                >
-                  <div
-                    className="h-full rounded-full bg-zinc-700 transition-[width] dark:bg-zinc-300"
-                    style={{ width: `${(progress.done / progress.total) * 100}%` }}
-                  />
+              {rangeDays > LONG_RANGE_DAYS && rangeDays <= 365 && (
+                <div className="mt-3 flex gap-2 rounded-lg bg-warn-bg p-3 text-xs leading-relaxed text-warn">
+                  <AlertIcon />
+                  <p>
+                    {Math.round(rangeDays)}일은 수집에 수십 분이 걸려요. 짧은 시간에 여러 번 수집하면 K-apt 접속이 일시적으로 제한될 수
+                    있어요.
+                  </p>
                 </div>
-                <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-                  {progress.done} / {progress.total}건 처리 ({Math.floor((progress.done / progress.total) * 100)}%)
+              )}
+            </fieldset>
+
+            <button
+              type="submit"
+              disabled={status === "loading" || regions.length === 0 || !keyword.trim()}
+              className="mt-6 flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-primary text-sm font-semibold text-primary-fg transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {status === "loading" ? (
+                <>
+                  <Spinner /> 수집 중 · {formatElapsed(elapsed)}
+                </>
+              ) : regions.length === 0 ? (
+                "지역을 1개 이상 선택해 주세요"
+              ) : !keyword.trim() ? (
+                "검색어를 입력해 주세요"
+              ) : (
+                <>
+                  <SearchIcon /> 검색 시작
+                </>
+              )}
+            </button>
+            <p className="mt-3 text-center text-[11px] text-subtle">한 번에 하나씩 수집할 수 있어요 · 결과는 24시간 보관</p>
+          </form>
+        </aside>
+
+        <main className="min-w-0">
+          {status === "idle" && (
+            <section className={`${card} flex flex-col items-center px-6 py-16 text-center`}>
+              <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary-soft text-primary">
+                <SearchIcon size={26} />
+              </span>
+              <h2 className="mt-4 text-lg font-bold text-ink">검색 조건을 정하고 검색을 시작하세요</h2>
+              <p className="mt-1 text-sm text-muted">공고마다 공고문을 열어 자본금·실적·공법번호를 정리해 드려요.</p>
+              <ol className="mt-8 grid w-full max-w-2xl gap-3 text-left sm:grid-cols-3">
+                {[
+                  ["낙찰공고 검색", "지역·기간·검색어로 K-apt 낙찰공고를 모아요."],
+                  ["공고문 분석", "첨부된 공고문(HWP·PDF)에서 참가자격을 읽어요."],
+                  ["확인 후 내려받기", "확인이 필요한 건만 근거와 함께 보고 엑셀로 받아요."],
+                ].map(([title, desc], i) => (
+                  <li key={title} className="rounded-xl border border-line bg-surface-2 p-4">
+                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-brand text-xs font-bold text-white">
+                      {i + 1}
+                    </span>
+                    <p className="mt-3 text-sm font-semibold text-ink">{title}</p>
+                    <p className="mt-1 text-xs leading-relaxed text-muted">{desc}</p>
+                  </li>
+                ))}
+              </ol>
+            </section>
+          )}
+
+          {status === "loading" && (
+            <section className={`${card} p-6`}>
+              <div className="flex flex-wrap items-end justify-between gap-4">
+                <div>
+                  <p className="text-xs font-semibold text-primary">수집 진행 중</p>
+                  <p className="mt-1 text-3xl font-bold tabular-nums text-ink">
+                    {progress?.total ? `${percent}%` : "준비 중"}
+                  </p>
+                </div>
+                <p className="text-sm tabular-nums text-muted">
+                  {progress?.total ? `${progress.done} / ${progress.total}건` : ""} · {formatElapsed(elapsed)} 경과
                 </p>
-              </>
-            )}
-            <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-              이 창을 닫거나 새로고침해도 수집은 계속돼요. 다시 열면 이어서 보여드려요.
-            </p>
-          </div>
-        )}
-
-        {status === "error" && (
-          <div role="alert" className="mt-5 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-950/40 dark:text-red-300">
-            {errorMsg}
-            {errorMsg.includes("K-apt 접속이 제한") && (
-              <a
-                href={KAPT_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="mt-2 block font-medium underline"
+              </div>
+              <div
+                role="progressbar"
+                aria-label="공고 처리 진행률"
+                aria-valuemin={0}
+                aria-valuemax={progress?.total || 1}
+                aria-valuenow={progress?.done ?? 0}
+                className="mt-4 h-2.5 overflow-hidden rounded-full bg-surface-2 ring-1 ring-line"
               >
-                K-apt 열어서 제한 해제하기
-              </a>
-            )}
-          </div>
-        )}
-
-        {status === "done" && jobId && (
-          <section className="mt-8 border-t border-black/[.06] pt-6 dark:border-white/[.08]">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 className="text-base font-semibold text-black dark:text-zinc-50">수집 결과</h2>
-              <a
-                href={`${API_BASE}/api/collect/${jobId}/download`}
-                className="inline-flex h-9 items-center justify-center rounded-full bg-foreground px-4 text-sm font-medium text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc]"
-              >
-                엑셀 다운로드
-              </a>
-            </div>
-
-            <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-              {filters.map((f) => (
-                <button
-                  key={f.key}
-                  type="button"
-                  aria-pressed={filter === f.key}
-                  onClick={() => {
-                    setFilter(f.key);
-                    setOpenRow(null);
-                  }}
-                  className={
-                    "rounded-xl border px-4 py-3 text-left transition-colors " +
-                    (filter === f.key
-                      ? "border-foreground ring-1 ring-foreground"
-                      : "border-black/[.08] hover:bg-black/[.03] dark:border-white/[.145] dark:hover:bg-white/[.06]")
-                  }
-                >
-                  <span className="block text-xs text-zinc-500 dark:text-zinc-400">{f.label}</span>
-                  <span className={`block text-2xl font-semibold ${f.tone}`}>{f.count}</span>
-                </button>
-              ))}
-            </div>
-            {checkCount + failCount > 0 && (
-              <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
-                <strong className="text-amber-600 dark:text-amber-400">확인 필요</strong>는 근거 문장을,{" "}
-                <strong className="text-red-600 dark:text-red-400">수집 실패</strong>는 원문을 직접 확인해 주세요. 행을 누르면 근거와 원문
-                링크가 펼쳐져요.
+                <div className="h-full rounded-full bg-primary transition-[width] duration-500" style={{ width: `${percent}%` }} />
+              </div>
+              <ol className="mt-6 grid gap-2 sm:grid-cols-3">
+                {STEPS.map((name, i) => (
+                  <li
+                    key={name}
+                    className={
+                      "flex items-center gap-2 rounded-lg border px-3 py-2.5 text-[13px] " +
+                      (i === step
+                        ? "border-primary bg-primary-soft font-semibold text-primary"
+                        : i < step
+                          ? "border-line text-ink"
+                          : "border-line text-subtle")
+                    }
+                  >
+                    {i < step ? <CheckIcon /> : i === step ? <Spinner /> : <span className="w-4 text-center">{i + 1}</span>}
+                    {name}
+                  </li>
+                ))}
+              </ol>
+              <p className="mt-4 text-sm text-muted">{progress?.message ?? "작업을 시작하는 중"}</p>
+              <p className="mt-4 rounded-lg bg-surface-2 px-3 py-2 text-xs text-muted">
+                이 창을 닫거나 새로고침해도 수집은 계속돼요. 다시 열면 이어서 보여드려요.
               </p>
-            )}
+            </section>
+          )}
 
-            {rows.length > 0 && (
-              <>
-                <div className="mt-4 flex items-center gap-2">
-                  <input
-                    type="search"
-                    aria-label="결과 안에서 찾기"
-                    value={query}
-                    onChange={(e) => {
-                      setQuery(e.target.value);
+          {status === "error" && (
+            <section role="alert" className={`${card} flex gap-4 border-bad/30 p-6`}>
+              <span className="flex h-10 w-10 flex-none items-center justify-center rounded-full bg-bad-bg text-bad">
+                <AlertIcon size={20} />
+              </span>
+              <div>
+                <h2 className="text-base font-bold text-ink">수집하지 못했어요</h2>
+                <p className="mt-1 text-sm leading-relaxed text-muted">{errorMsg}</p>
+                {errorMsg.includes("K-apt 접속이 제한") && (
+                  <a
+                    href={KAPT_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-4 inline-flex h-9 items-center rounded-lg border border-line px-3 text-sm font-medium text-ink hover:bg-surface-2"
+                  >
+                    K-apt 열어서 제한 해제하기 ↗
+                  </a>
+                )}
+              </div>
+            </section>
+          )}
+
+          {status === "done" && jobId && (
+            <section className="flex flex-col gap-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-bold text-ink">수집 결과</h2>
+                  <p className="text-xs text-muted">낙찰공고 {rows.length}건을 공고일자 순으로 정리했어요</p>
+                </div>
+                <div className="flex gap-2">
+                {!panelOpen && (
+                  <button
+                    type="button"
+                    onClick={() => setPanelOpen(true)}
+                    className="hidden h-10 items-center gap-2 rounded-lg border border-line bg-surface px-4 text-sm font-medium text-ink transition-colors hover:border-subtle lg:inline-flex"
+                  >
+                    <SearchIcon /> 조건 변경
+                  </button>
+                )}
+                <a
+                  href={`${API_BASE}/api/collect/${jobId}/download`}
+                  className="inline-flex h-10 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-fg transition-colors hover:bg-primary-hover"
+                >
+                  <DownloadIcon /> 엑셀 다운로드
+                </a>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+                {filters.map((f) => (
+                  <button
+                    key={f.key}
+                    type="button"
+                    aria-pressed={filter === f.key}
+                    onClick={() => {
+                      setFilter(f.key);
                       setOpenRow(null);
                     }}
-                    placeholder="결과 안에서 찾기 (아파트명, 공사명, 낙찰업체 등)"
-                    className={`${inputClass} max-w-md`}
-                  />
-                  <span className="whitespace-nowrap text-xs text-zinc-500 dark:text-zinc-400">{visibleRows.length}건 표시</span>
-                </div>
+                    className={
+                      `${card} p-4 text-left transition-all ` +
+                      (filter === f.key ? "border-primary ring-2 ring-primary/20" : "hover:border-subtle")
+                    }
+                  >
+                    <span className="flex items-center gap-2 text-[13px] font-medium text-muted">
+                      <span className={`h-2 w-2 rounded-full ${f.dot}`} />
+                      {f.label}
+                    </span>
+                    <span className="mt-2 flex items-baseline gap-1.5">
+                      <span className={`text-[28px] font-bold leading-none tabular-nums ${f.tone}`}>{f.count}</span>
+                      <span className="text-xs text-subtle">
+                        건{f.key !== "all" && rows.length > 0 ? ` · ${Math.round((f.count / rows.length) * 100)}%` : ""}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </div>
 
-                <div className="mt-3 max-h-[70vh] overflow-auto rounded-lg border border-black/[.08] dark:border-white/[.145]">
-                  <table className="w-full text-left text-xs">
-                    <thead className="sticky top-0 z-10 bg-zinc-100 dark:bg-zinc-800">
-                      <tr>
-                        {columns.map((c) => (
-                          <th key={c} className="whitespace-nowrap px-2.5 py-2 font-medium text-black dark:text-zinc-50">
-                            {c === "공고 링크" ? "원문" : c}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {visibleRows.length === 0 && (
+              {rows.length > 0 && (
+                <div className={`${card} overflow-hidden`}>
+                  <div className="flex flex-wrap items-center gap-3 border-b border-line p-3">
+                    <div className="relative w-full max-w-sm">
+                      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-subtle">
+                        <SearchIcon />
+                      </span>
+                      <input
+                        type="search"
+                        aria-label="결과 안에서 찾기"
+                        value={query}
+                        onChange={(e) => {
+                          setQuery(e.target.value);
+                          setOpenRow(null);
+                        }}
+                        placeholder="아파트명, 공사명, 낙찰업체로 찾기"
+                        className={`${inputClass} h-9 pl-9`}
+                      />
+                    </div>
+                    <span className="text-xs text-muted">{visibleRows.length}건</span>
+                    <span className="ml-auto hidden text-xs text-subtle md:block">행을 누르면 판단 근거가 펼쳐져요</span>
+                  </div>
+
+                  <div className="max-h-[72vh] overflow-auto">
+                    <table className="w-full text-left text-[13px]">
+                      <thead className="sticky top-0 z-10 bg-surface-2 shadow-[inset_0_-1px_0_var(--line)]">
                         <tr>
-                          <td colSpan={columns.length} className="px-3 py-8 text-center text-zinc-500 dark:text-zinc-400">
-                            조건에 맞는 공고가 없어요.
-                          </td>
-                        </tr>
-                      )}
-                      {visibleRows.map(({ row, i, kind }) => {
-                        const isOpen = openRow === i;
-                        const evidence = evidenceOf(row);
-                        return (
-                          <Fragment key={i}>
-                            <tr
-                              onClick={() => setOpenRow(isOpen ? null : i)}
-                              className={`cursor-pointer border-t ${KIND_ROW[kind]}`}
+                          {columns.map((c) => (
+                            <th
+                              key={c}
+                              className={`whitespace-nowrap px-2.5 py-2.5 text-xs font-semibold text-muted ${NUMERIC_COLUMNS.has(c) ? "text-right" : ""}`}
                             >
-                              {columns.map((c) =>
-                                c === "공고 링크" ? (
-                                  <td key={c} className="whitespace-nowrap px-3 py-2">
-                                    {row[c] ? (
-                                      <a
-                                        href={row[c]}
-                                        onClick={(e) => e.stopPropagation()}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="text-blue-600 underline hover:text-blue-800 dark:text-blue-400"
+                              {c === "공고 링크" ? "원문" : c}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {visibleRows.length === 0 && (
+                          <tr>
+                            <td colSpan={columns.length} className="px-3 py-12 text-center text-sm text-muted">
+                              조건에 맞는 공고가 없어요.
+                            </td>
+                          </tr>
+                        )}
+                        {visibleRows.map(({ row, i, kind }) => {
+                          const isOpen = openRow === i;
+                          const evidence = evidenceOf(row);
+                          return (
+                            <Fragment key={i}>
+                              <tr
+                                onClick={() => setOpenRow(isOpen ? null : i)}
+                                className={`cursor-pointer border-t border-line transition-colors hover:bg-surface-2 ${KIND_STYLE[kind].row} ${isOpen ? "bg-surface-2" : ""}`}
+                              >
+                                {columns.map((c) =>
+                                  c === "공고 링크" ? (
+                                    <td key={c} className="whitespace-nowrap px-3 py-2.5">
+                                      {row[c] ? (
+                                        <a
+                                          href={row[c]}
+                                          onClick={(e) => e.stopPropagation()}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="font-medium text-primary hover:underline"
+                                        >
+                                          보기 ↗
+                                        </a>
+                                      ) : (
+                                        "-"
+                                      )}
+                                    </td>
+                                  ) : c === "상태" ? (
+                                    <td key={c} className="px-3 py-2.5" title={row[c]}>
+                                      <button
+                                        type="button"
+                                        aria-expanded={isOpen}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setOpenRow(isOpen ? null : i);
+                                        }}
+                                        className="flex items-center gap-2"
                                       >
-                                        보기
-                                      </a>
-                                    ) : (
-                                      "-"
-                                    )}
-                                  </td>
-                                ) : c === "상태" ? (
-                                  <td key={c} className="px-3 py-2" title={row[c]}>
-                                    <button
-                                      type="button"
-                                      aria-expanded={isOpen}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setOpenRow(isOpen ? null : i);
-                                      }}
-                                      className="flex items-center gap-1.5 text-left"
-                                    >
-                                      <span className="text-zinc-400" aria-hidden>
-                                        {isOpen ? "▾" : "▸"}
-                                      </span>
-                                      <span className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${KIND_BADGE[kind]}`}>
-                                        {KIND_LABELS[kind]}
-                                      </span>
-                                    </button>
-                                  </td>
-                                ) : (
-                                  <td
-                                    key={c}
-                                    className={`max-w-[150px] truncate px-2.5 py-2 ${cellTone(row[c] ?? "")}`}
-                                    title={row[c]}
-                                  >
-                                    {row[c] || "-"}
-                                  </td>
-                                )
-                              )}
-                            </tr>
-                            {isOpen && (
-                              <tr className="border-t border-black/[.06] bg-zinc-50 dark:border-white/[.08] dark:bg-zinc-950">
-                                <td colSpan={columns.length} className="px-4 py-4 text-xs text-zinc-700 dark:text-zinc-300">
-                                  {/* 표가 옆으로 길어도 근거가 화면 왼쪽에 보이도록 고정 */}
-                                  <div className="sticky left-4 max-w-[min(56rem,calc(100vw-6rem))]">
-                                  <p className="font-medium text-black dark:text-zinc-50">{row["상태"]}</p>
-                                  {evidence.length > 0 ? (
-                                    <div className="mt-3 grid gap-2">
-                                      {evidence.map(([col, text]) => (
-                                        <div key={col} className="rounded-lg border border-black/[.06] bg-white p-3 dark:border-white/[.08] dark:bg-zinc-900">
-                                          <span className="font-medium text-black dark:text-zinc-50">
-                                            {col}: {row[col] || "-"}
-                                          </span>
-                                          <p className="mt-1 whitespace-pre-wrap break-all text-zinc-600 dark:text-zinc-400">{text}</p>
-                                        </div>
-                                      ))}
-                                    </div>
+                                        <ChevronIcon open={isOpen} />
+                                        <span
+                                          className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold ${KIND_STYLE[kind].pill}`}
+                                        >
+                                          <span className={`h-1.5 w-1.5 rounded-full ${KIND_STYLE[kind].dot}`} />
+                                          {KIND_LABELS[kind]}
+                                        </span>
+                                      </button>
+                                    </td>
                                   ) : (
-                                    <p className="mt-2 text-zinc-500">공고문에서 뽑은 근거 문장이 없어요. 원문을 직접 확인해 주세요.</p>
-                                  )}
-                                  {row["공고 링크"] && (
-                                    <a
-                                      href={row["공고 링크"]}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="mt-3 inline-block font-medium text-blue-600 underline hover:text-blue-800 dark:text-blue-400"
+                                    <td
+                                      key={c}
+                                      className={`max-w-[140px] truncate px-2.5 py-2.5 ${cellTone(row[c] ?? "")} ${NUMERIC_COLUMNS.has(c) ? "text-right tabular-nums" : ""} ${c === "아파트명" ? "font-semibold" : ""}`}
+                                      title={row[c]}
                                     >
-                                      K-apt 원문 보기
-                                    </a>
-                                  )}
-                                  </div>
-                                </td>
+                                      {row[c] || "-"}
+                                    </td>
+                                  )
+                                )}
                               </tr>
-                            )}
-                          </Fragment>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                              {isOpen && (
+                                <tr className="border-t border-line bg-surface-2">
+                                  <td colSpan={columns.length} className="px-4 py-4">
+                                    {/* 표가 옆으로 길어도 근거가 화면 왼쪽에 보이도록 고정 */}
+                                    <div className="sticky left-4 max-w-[min(60rem,calc(100vw-4rem))]">
+                                      <p className={`inline-block rounded-lg px-3 py-2 text-[13px] font-medium ${KIND_STYLE[kind].pill}`}>
+                                        {row["상태"]}
+                                      </p>
+                                      {evidence.length > 0 ? (
+                                        <div className="mt-3 grid gap-2 md:grid-cols-2">
+                                          {evidence.map(([col, text]) => (
+                                            <div key={col} className="rounded-xl border border-line bg-surface p-3">
+                                              <p className="text-xs text-muted">{col}</p>
+                                              <p className={`mt-0.5 text-sm font-semibold ${cellTone(row[col] ?? "")}`}>{row[col] || "-"}</p>
+                                              <p className="mt-2 whitespace-pre-wrap break-all text-xs leading-relaxed text-muted">{text}</p>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      ) : (
+                                        <p className="mt-3 text-sm text-muted">공고문에서 뽑은 근거 문장이 없어요. 원문을 직접 확인해 주세요.</p>
+                                      )}
+                                      {row["공고 링크"] && (
+                                        <a
+                                          href={row["공고 링크"]}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="mt-3 inline-flex h-9 items-center rounded-lg border border-line bg-surface px-3 text-sm font-medium text-ink hover:border-subtle"
+                                        >
+                                          K-apt 원문 보기 ↗
+                                        </a>
+                                      )}
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </Fragment>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
-              </>
-            )}
-          </section>
-        )}
-      </main>
+              )}
+            </section>
+          )}
+        </main>
+      </div>
     </div>
   );
+}
+
+// 도로 차선을 본뜬 로고
+function LogoMark() {
+  return (
+    <span className="flex h-9 w-9 flex-none items-center justify-center rounded-xl bg-brand" aria-hidden>
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+        <path d="M6 2 3 18M14 2l3 16" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" />
+        <path d="M10 3v3M10 9v2.5M10 14.5V17" stroke="var(--marker)" strokeWidth="1.8" strokeLinecap="round" />
+      </svg>
+    </span>
+  );
+}
+
+function SearchIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" aria-hidden>
+      <circle cx="7" cy="7" r="4.75" stroke="currentColor" strokeWidth="1.5" />
+      <path d="m10.5 10.5 3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden className="mr-1 inline-block align-[-3px]">
+      <path d="m3.5 8.5 3 3 6-7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function AlertIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" aria-hidden className="flex-none">
+      <circle cx="8" cy="8" r="6.25" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M8 4.75v3.75" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <circle cx="8" cy="11" r=".9" fill="currentColor" />
+    </svg>
+  );
+}
+
+function DownloadIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path d="M8 2.5v8m0 0-3-3m3 3 3-3M3 13.5h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function ChevronIcon({ open }: { open: boolean }) {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden
+      className={`text-subtle transition-transform ${open ? "rotate-90" : ""}`}
+    >
+      <path d="m6 3.5 4.5 4.5L6 12.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function Spinner() {
+  return <span className="h-4 w-4 flex-none animate-spin rounded-full border-2 border-current border-t-transparent" aria-hidden />;
 }

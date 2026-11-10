@@ -16,6 +16,26 @@ const QUICK_RANGES = [
   { label: "1년", days: 365 },
 ];
 
+// 이보다 긴 기간은 수집이 오래 걸리고 K-apt 접속이 제한될 수 있어 미리 알린다
+const LONG_RANGE_DAYS = 90;
+const KAPT_URL = "https://www.k-apt.go.kr";
+const KIND_LABELS = { ok: "정상", check: "확인 필요", fail: "수집 실패" } as const;
+const KIND_BADGE = {
+  ok: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+  check: "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300",
+  fail: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
+};
+const KIND_ROW = {
+  ok: "border-black/[.06] hover:bg-black/[.02] dark:border-white/[.08] dark:hover:bg-white/[.04]",
+  check: "border-amber-200 bg-amber-50/60 hover:bg-amber-50 dark:border-amber-900/40 dark:bg-amber-950/30",
+  fail: "border-red-200 bg-red-50/60 hover:bg-red-50 dark:border-red-900/40 dark:bg-red-950/30",
+};
+// 요건이 없다고 확인된 값은 흐리게, 사람이 봐야 하는 값은 강조해 한눈에 구분되게 한다
+const NOT_REQUIRED_VALUES = new Set(["제한없음", "미적용"]);
+const NEEDS_CHECK_VALUE = "[확인 필요]";
+
+const formatElapsed = (sec: number) => (sec < 60 ? `${sec}초` : `${Math.floor(sec / 60)}분 ${sec % 60}초`);
+
 const POLL_INTERVAL_MS = 2000;
 // 일시적인 연결 끊김 한 번으로 수집이 실패한 것처럼 보이지 않도록 연속 실패가 이만큼 쌓여야 중단
 const POLL_MAX_FAILURES = 5;
@@ -80,7 +100,21 @@ export default function Home() {
   const [progress, setProgress] = useState<Progress | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [openRow, setOpenRow] = useState<number | null>(null);
+  const [query, setQuery] = useState("");
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // 다른 탭에서 기다려도 진행·완료를 알 수 있게 탭 제목에 표시한다
+  useEffect(() => {
+    const base = "K-apt 낙찰 정보 수집";
+    document.title =
+      status === "loading"
+        ? `수집 중${progress?.total ? ` ${progress.done}/${progress.total}` : ""} · ${base}`
+        : status === "done"
+          ? `수집 완료 · ${base}`
+          : status === "error"
+            ? `오류 · ${base}`
+            : base;
+  }, [status, progress]);
 
   useEffect(() => {
     if (status === "loading") {
@@ -114,6 +148,7 @@ export default function Home() {
     setCheckCount(job.check_count ?? 0);
     setFailCount(job.fail_count ?? 0);
     setFilter("all");
+    setQuery("");
     setOpenRow(null);
     setStatus("done");
   };
@@ -228,22 +263,53 @@ export default function Home() {
     }
   };
 
-  // "_근거_자본금" 같은 "_" 키는 컬럼이 아니라 해당 셀에 마우스를 올렸을 때 보여줄 근거
-  const columns = rows.length > 0 ? Object.keys(rows[0]).filter((c) => !c.startsWith("_")) : [];
-  const filters: { key: Filter; label: string; count: number }[] = [
-    { key: "all", label: "전체", count: rows.length },
-    { key: "ok", label: "정상", count: successCount },
-    { key: "check", label: "확인 필요", count: checkCount },
-    { key: "fail", label: "수집 실패", count: failCount },
+  // "_근거_자본금" 같은 "_" 키는 컬럼이 아니라 행을 펼쳤을 때 보여줄 근거
+  // 사용자가 가장 먼저 봐야 하는 상태를 맨 앞에, 원문 링크는 맨 뒤에 둔다
+  const columns =
+    rows.length > 0
+      ? [
+          "상태",
+          ...Object.keys(rows[0]).filter((c) => !c.startsWith("_") && c !== "상태" && c !== "공고 링크"),
+          "공고 링크",
+        ]
+      : [];
+  const filters: { key: Filter; label: string; count: number; tone: string }[] = [
+    { key: "all", label: "전체", count: rows.length, tone: "text-black dark:text-zinc-50" },
+    { key: "ok", label: "정상", count: successCount, tone: "text-green-700 dark:text-green-400" },
+    { key: "check", label: "확인 필요", count: checkCount, tone: "text-amber-600 dark:text-amber-400" },
+    { key: "fail", label: "수집 실패", count: failCount, tone: "text-red-600 dark:text-red-400" },
   ];
   const evidenceOf = (row: ResultRow) =>
     Object.entries(row)
       .filter(([k, v]) => k.startsWith("_근거_") && v)
       .map(([k, v]) => [k.slice("_근거_".length), v]);
+  const q = query.trim();
+  const visibleRows = rows
+    .map((row, i) => ({ row, i, kind: rowKind(row) }))
+    .filter(({ row, kind }) => (filter === "all" || filter === kind) && (!q || columns.some((c) => row[c]?.includes(q))));
+
+  const rangeDays = (new Date(dateEnd).getTime() - new Date(dateStart).getTime()) / 86_400_000;
+  const today = toDateInputValue(new Date());
+  const activeQuickRange = QUICK_RANGES.find((r) => {
+    const start = new Date();
+    start.setDate(start.getDate() - r.days);
+    return dateEnd === today && dateStart === toDateInputValue(start);
+  })?.label;
+
+  const inputClass =
+    "w-full rounded-lg border border-black/[.08] bg-transparent px-3 py-2 text-sm text-black outline-none focus:border-black/40 dark:border-white/[.145] dark:text-zinc-50";
+  const labelClass = "mb-2 block text-sm font-medium text-black dark:text-zinc-50";
+
+  const cellTone = (value: string) =>
+    NOT_REQUIRED_VALUES.has(value)
+      ? "text-zinc-400 dark:text-zinc-500"
+      : value.startsWith(NEEDS_CHECK_VALUE)
+        ? "text-amber-700 dark:text-amber-400"
+        : "text-zinc-700 dark:text-zinc-300";
 
   return (
-    <div className="flex min-h-screen justify-center bg-zinc-50 px-4 py-16 dark:bg-black">
-      <main className={`w-full ${rows.length > 0 ? "max-w-6xl" : "max-w-3xl"} rounded-2xl border border-black/[.08] bg-white p-8 dark:border-white/[.145] dark:bg-zinc-900`}>
+    <div className="flex min-h-screen justify-center bg-zinc-50 px-3 py-12 sm:px-4 dark:bg-black">
+      <main className={`w-full ${rows.length > 0 ? "max-w-[1600px]" : "max-w-3xl"} rounded-2xl border border-black/[.08] bg-white p-6 sm:p-8 dark:border-white/[.145] dark:bg-zinc-900`}>
         <h1 className="text-xl font-semibold text-black dark:text-zinc-50">
           K-apt 낙찰 정보 수집
         </h1>
@@ -251,12 +317,10 @@ export default function Home() {
           조건에 맞는 낙찰공고를 검색하고 엑셀로 내려받습니다.
         </p>
 
-        <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-5">
-          <div>
-            <label className="mb-2 block text-sm font-medium text-black dark:text-zinc-50">
-              지역
-            </label>
-            <div className="flex gap-4">
+        <form onSubmit={handleSubmit} className="mt-6 grid gap-5 md:grid-cols-2">
+          <fieldset>
+            <legend className={labelClass}>지역</legend>
+            <div className="flex h-[38px] items-center gap-4">
               {REGIONS.map((r) => (
                 <label key={r} className="flex items-center gap-1.5 text-sm text-zinc-700 dark:text-zinc-300">
                   <input
@@ -268,10 +332,10 @@ export default function Home() {
                 </label>
               ))}
             </div>
-          </div>
+          </fieldset>
 
           <div>
-            <label htmlFor="keyword" className="mb-2 block text-sm font-medium text-black dark:text-zinc-50">
+            <label htmlFor="keyword" className={labelClass}>
               검색어
             </label>
             <input
@@ -280,97 +344,125 @@ export default function Home() {
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
               placeholder="예: 아스콘"
-              className="w-full rounded-lg border border-black/[.08] bg-transparent px-3 py-2 text-sm text-black outline-none focus:border-black/40 dark:border-white/[.145] dark:text-zinc-50"
+              className={inputClass}
             />
           </div>
 
-          <div>
-            <label className="mb-2 block text-sm font-medium text-black dark:text-zinc-50">
-              기간 (최대 1년)
-            </label>
-            <div className="mb-2 flex gap-2">
-              {QUICK_RANGES.map((q) => (
+          <fieldset className="md:col-span-2">
+            <legend className={labelClass}>기간 (최대 1년)</legend>
+            <div className="flex flex-wrap items-center gap-2">
+              {QUICK_RANGES.map((r) => (
                 <button
-                  key={q.label}
+                  key={r.label}
                   type="button"
-                  onClick={() => applyQuickRange(q.days)}
-                  className="rounded-full border border-black/[.08] px-3 py-1 text-xs text-zinc-600 transition-colors hover:bg-black/[.04] dark:border-white/[.145] dark:text-zinc-300 dark:hover:bg-white/[.08]"
+                  aria-pressed={activeQuickRange === r.label}
+                  onClick={() => applyQuickRange(r.days)}
+                  className={
+                    "rounded-full border px-3 py-1.5 text-xs transition-colors " +
+                    (activeQuickRange === r.label
+                      ? "border-foreground bg-foreground text-background"
+                      : "border-black/[.08] text-zinc-600 hover:bg-black/[.04] dark:border-white/[.145] dark:text-zinc-300 dark:hover:bg-white/[.08]")
+                  }
                 >
-                  {q.label}
+                  최근 {r.label}
                 </button>
               ))}
+              <div className="flex min-w-[280px] flex-1 items-center gap-2">
+                <input
+                  type="date"
+                  aria-label="시작일"
+                  value={dateStart}
+                  max={dateEnd}
+                  onChange={(e) => setDateStart(e.target.value)}
+                  className={inputClass}
+                />
+                <span className="text-sm text-zinc-500 dark:text-zinc-400">~</span>
+                <input
+                  type="date"
+                  aria-label="종료일"
+                  value={dateEnd}
+                  min={dateStart}
+                  max={today}
+                  onChange={(e) => setDateEnd(e.target.value)}
+                  className={inputClass}
+                />
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <input
-                type="date"
-                value={dateStart}
-                onChange={(e) => setDateStart(e.target.value)}
-                className="w-full rounded-lg border border-black/[.08] bg-transparent px-3 py-2 text-sm text-black outline-none focus:border-black/40 dark:border-white/[.145] dark:text-zinc-50"
-              />
-              <span className="text-sm text-zinc-500 dark:text-zinc-400">~</span>
-              <input
-                type="date"
-                value={dateEnd}
-                onChange={(e) => setDateEnd(e.target.value)}
-                className="w-full rounded-lg border border-black/[.08] bg-transparent px-3 py-2 text-sm text-black outline-none focus:border-black/40 dark:border-white/[.145] dark:text-zinc-50"
-              />
-            </div>
-          </div>
+            {rangeDays > LONG_RANGE_DAYS && rangeDays <= 365 && (
+              <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+                기간이 {Math.round(rangeDays)}일로 길어요. 수집에 수십 분이 걸리고, 짧은 시간에 여러 번 수집하면 K-apt 접속이
+                일시적으로 제한될 수 있어요.
+              </p>
+            )}
+          </fieldset>
 
           <button
             type="submit"
-            disabled={status === "loading" || regions.length === 0 || !keyword}
-            className="mt-2 flex h-11 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-colors hover:bg-[#383838] disabled:opacity-50 dark:hover:bg-[#ccc]"
+            disabled={status === "loading" || regions.length === 0 || !keyword.trim()}
+            className="flex h-11 items-center justify-center rounded-full bg-foreground px-5 text-sm font-medium text-background transition-colors hover:bg-[#383838] disabled:opacity-50 md:col-span-2 dark:hover:bg-[#ccc]"
           >
-            {status === "loading" ? `수집 중... (${elapsed}초 경과)` : "검색 시작"}
+            {status === "loading"
+              ? `수집 중... (${formatElapsed(elapsed)} 경과)`
+              : regions.length === 0
+                ? "지역을 1개 이상 선택해 주세요"
+                : !keyword.trim()
+                  ? "검색어를 입력해 주세요"
+                  : "검색 시작"}
           </button>
         </form>
 
         {status === "loading" && (
-          <div className="mt-4">
-            <div className="flex items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
+          <div className="mt-5 rounded-xl border border-black/[.06] bg-zinc-50 p-4 dark:border-white/[.08] dark:bg-zinc-950">
+            <div className="flex items-center gap-2 text-sm text-zinc-600 dark:text-zinc-300">
               <span className="h-3 w-3 flex-none animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-600 dark:border-zinc-600 dark:border-t-zinc-300" />
               {progress?.message ?? "작업을 시작하는 중"}
-              {progress && progress.total > 0 && ` (${progress.done}/${progress.total}건)`}
             </div>
             {progress && progress.total > 0 && (
-              <div
-                role="progressbar"
-                aria-label="공고 처리 진행률"
-                aria-valuemin={0}
-                aria-valuemax={progress.total}
-                aria-valuenow={progress.done}
-                className="mt-2 h-2 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800"
-              >
+              <>
                 <div
-                  className="h-full rounded-full bg-zinc-700 transition-[width] dark:bg-zinc-300"
-                  style={{ width: `${(progress.done / progress.total) * 100}%` }}
-                />
-              </div>
+                  role="progressbar"
+                  aria-label="공고 처리 진행률"
+                  aria-valuemin={0}
+                  aria-valuemax={progress.total}
+                  aria-valuenow={progress.done}
+                  className="mt-3 h-2 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800"
+                >
+                  <div
+                    className="h-full rounded-full bg-zinc-700 transition-[width] dark:bg-zinc-300"
+                    style={{ width: `${(progress.done / progress.total) * 100}%` }}
+                  />
+                </div>
+                <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                  {progress.done} / {progress.total}건 처리 ({Math.floor((progress.done / progress.total) * 100)}%)
+                </p>
+              </>
             )}
+            <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+              이 창을 닫거나 새로고침해도 수집은 계속돼요. 다시 열면 이어서 보여드려요.
+            </p>
           </div>
         )}
 
         {status === "error" && (
-          <p className="mt-4 text-sm text-red-600 dark:text-red-400">{errorMsg}</p>
+          <div role="alert" className="mt-5 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-950/40 dark:text-red-300">
+            {errorMsg}
+            {errorMsg.includes("K-apt 접속이 제한") && (
+              <a
+                href={KAPT_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-2 block font-medium underline"
+              >
+                K-apt 열어서 제한 해제하기
+              </a>
+            )}
+          </div>
         )}
 
         {status === "done" && jobId && (
-          <div className="mt-6">
-            <div className="flex items-center justify-between">
-              <p className="text-sm text-black dark:text-zinc-50">
-                정상: <strong>{successCount}</strong>건
-                {checkCount > 0 && (
-                  <>
-                    , 확인 필요: <strong className="text-amber-600 dark:text-amber-400">{checkCount}</strong>건
-                  </>
-                )}
-                {failCount > 0 && (
-                  <>
-                    , 수집 실패: <strong className="text-red-600 dark:text-red-400">{failCount}</strong>건
-                  </>
-                )}
-              </p>
+          <section className="mt-8 border-t border-black/[.06] pt-6 dark:border-white/[.08]">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-base font-semibold text-black dark:text-zinc-50">수집 결과</h2>
               <a
                 href={`${API_BASE}/api/collect/${jobId}/download`}
                 className="inline-flex h-9 items-center justify-center rounded-full bg-foreground px-4 text-sm font-medium text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc]"
@@ -379,151 +471,171 @@ export default function Home() {
               </a>
             </div>
 
-            {rows.length > 0 && (
-              <div className="mt-3 flex flex-wrap gap-2">
-                {filters.map((f) => (
-                  <button
-                    key={f.key}
-                    type="button"
-                    aria-pressed={filter === f.key}
-                    onClick={() => {
-                      setFilter(f.key);
-                      setOpenRow(null);
-                    }}
-                    className={
-                      "rounded-full border px-3 py-1 text-xs transition-colors " +
-                      (filter === f.key
-                        ? "border-foreground bg-foreground text-background"
-                        : "border-black/[.08] text-zinc-600 hover:bg-black/[.04] dark:border-white/[.145] dark:text-zinc-300 dark:hover:bg-white/[.08]")
-                    }
-                  >
-                    {f.label} {f.count}
-                  </button>
-                ))}
-                <span className="self-center text-xs text-zinc-500 dark:text-zinc-400">
-                  행을 누르면 판단 근거를 볼 수 있어요
-                </span>
-              </div>
+            <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {filters.map((f) => (
+                <button
+                  key={f.key}
+                  type="button"
+                  aria-pressed={filter === f.key}
+                  onClick={() => {
+                    setFilter(f.key);
+                    setOpenRow(null);
+                  }}
+                  className={
+                    "rounded-xl border px-4 py-3 text-left transition-colors " +
+                    (filter === f.key
+                      ? "border-foreground ring-1 ring-foreground"
+                      : "border-black/[.08] hover:bg-black/[.03] dark:border-white/[.145] dark:hover:bg-white/[.06]")
+                  }
+                >
+                  <span className="block text-xs text-zinc-500 dark:text-zinc-400">{f.label}</span>
+                  <span className={`block text-2xl font-semibold ${f.tone}`}>{f.count}</span>
+                </button>
+              ))}
+            </div>
+            {checkCount + failCount > 0 && (
+              <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
+                <strong className="text-amber-600 dark:text-amber-400">확인 필요</strong>는 근거 문장을,{" "}
+                <strong className="text-red-600 dark:text-red-400">수집 실패</strong>는 원문을 직접 확인해 주세요. 행을 누르면 근거와 원문
+                링크가 펼쳐져요.
+              </p>
             )}
 
             {rows.length > 0 && (
-              <div className="mt-3 max-h-[70vh] overflow-auto rounded-lg border border-black/[.08] dark:border-white/[.145]">
-                <table className="w-full text-left text-xs">
-                  <thead className="sticky top-0 bg-zinc-100 dark:bg-zinc-800">
-                    <tr>
-                      {columns.map((c) => (
-                        <th key={c} className="whitespace-nowrap px-3 py-2 font-medium text-black dark:text-zinc-50">
-                          {c}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((row, i) => {
-                      const kind = rowKind(row);
-                      if (filter !== "all" && filter !== kind) return null;
-                      const failed = kind === "fail";
-                      const needsCheck = kind === "check";
-                      const isOpen = openRow === i;
-                      return (
-                        <Fragment key={i}>
-                        <tr
-                          onClick={() => setOpenRow(isOpen ? null : i)}
-                          className={
-                            "cursor-pointer " +
-                            (failed
-                              ? "border-t border-red-200 bg-red-50 dark:border-red-900/40 dark:bg-red-950/40"
-                              : needsCheck
-                                ? "border-t border-amber-200 bg-amber-50 dark:border-amber-900/40 dark:bg-amber-950/40"
-                                : "border-t border-black/[.06] hover:bg-black/[.02] dark:border-white/[.08] dark:hover:bg-white/[.04]")
-                          }
-                        >
-                          {columns.map((c) =>
-                            c === "공고 링크" ? (
-                              <td key={c} className="px-3 py-2">
-                                {row[c] ? (
-                                  <a
-                                    href={row[c]}
-                                    onClick={(e) => e.stopPropagation()}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-blue-600 underline hover:text-blue-800 dark:text-blue-400"
-                                  >
-                                    원문 보기
-                                  </a>
-                                ) : (
-                                  "-"
-                                )}
-                              </td>
-                            ) : c === "상태" ? (
-                              <td key={c} className="px-3 py-2" title={row[c]}>
-                                <button
-                                  type="button"
-                                  aria-expanded={isOpen}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setOpenRow(isOpen ? null : i);
-                                  }}
-                                  className={
-                                    "inline-block max-w-[200px] truncate rounded-full px-2 py-0.5 text-[11px] font-medium " +
-                                    (failed
-                                      ? "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300"
-                                      : needsCheck
-                                        ? "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300"
-                                        : "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300")
-                                  }
-                                >
-                                  {row[c] || "-"}
-                                </button>
-                              </td>
-                            ) : (
-                              <td
-                                key={c}
-                                className={
-                                  "max-w-[220px] truncate px-3 py-2 text-zinc-700 dark:text-zinc-300" +
-                                  (row[`_근거_${c}`] ? " cursor-help underline decoration-dotted" : "")
-                                }
-                                title={row[`_근거_${c}`] ?? row[c]}
-                              >
-                                {row[c] || "-"}
-                              </td>
-                            )
-                          )}
+              <>
+                <div className="mt-4 flex items-center gap-2">
+                  <input
+                    type="search"
+                    aria-label="결과 안에서 찾기"
+                    value={query}
+                    onChange={(e) => {
+                      setQuery(e.target.value);
+                      setOpenRow(null);
+                    }}
+                    placeholder="결과 안에서 찾기 (아파트명, 공사명, 낙찰업체 등)"
+                    className={`${inputClass} max-w-md`}
+                  />
+                  <span className="whitespace-nowrap text-xs text-zinc-500 dark:text-zinc-400">{visibleRows.length}건 표시</span>
+                </div>
+
+                <div className="mt-3 max-h-[70vh] overflow-auto rounded-lg border border-black/[.08] dark:border-white/[.145]">
+                  <table className="w-full text-left text-xs">
+                    <thead className="sticky top-0 z-10 bg-zinc-100 dark:bg-zinc-800">
+                      <tr>
+                        {columns.map((c) => (
+                          <th key={c} className="whitespace-nowrap px-2.5 py-2 font-medium text-black dark:text-zinc-50">
+                            {c === "공고 링크" ? "원문" : c}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visibleRows.length === 0 && (
+                        <tr>
+                          <td colSpan={columns.length} className="px-3 py-8 text-center text-zinc-500 dark:text-zinc-400">
+                            조건에 맞는 공고가 없어요.
+                          </td>
                         </tr>
-                        {isOpen && (
-                          <tr className="border-t border-black/[.06] bg-zinc-50 dark:border-white/[.08] dark:bg-zinc-950">
-                            <td colSpan={columns.length} className="px-4 py-3 text-xs text-zinc-700 dark:text-zinc-300">
-                              <p className="font-medium text-black dark:text-zinc-50">{row["상태"]}</p>
-                              {evidenceOf(row).map(([col, text]) => (
-                                <div key={col} className="mt-2">
-                                  <span className="font-medium">{col}</span>
-                                  <p className="mt-0.5 whitespace-pre-wrap text-zinc-600 dark:text-zinc-400">{text}</p>
-                                </div>
-                              ))}
-                              {evidenceOf(row).length === 0 && (
-                                <p className="mt-2 text-zinc-500">공고문에서 뽑은 근거 문장이 없어요. 원문을 직접 확인해 주세요.</p>
+                      )}
+                      {visibleRows.map(({ row, i, kind }) => {
+                        const isOpen = openRow === i;
+                        const evidence = evidenceOf(row);
+                        return (
+                          <Fragment key={i}>
+                            <tr
+                              onClick={() => setOpenRow(isOpen ? null : i)}
+                              className={`cursor-pointer border-t ${KIND_ROW[kind]}`}
+                            >
+                              {columns.map((c) =>
+                                c === "공고 링크" ? (
+                                  <td key={c} className="whitespace-nowrap px-3 py-2">
+                                    {row[c] ? (
+                                      <a
+                                        href={row[c]}
+                                        onClick={(e) => e.stopPropagation()}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-blue-600 underline hover:text-blue-800 dark:text-blue-400"
+                                      >
+                                        보기
+                                      </a>
+                                    ) : (
+                                      "-"
+                                    )}
+                                  </td>
+                                ) : c === "상태" ? (
+                                  <td key={c} className="px-3 py-2" title={row[c]}>
+                                    <button
+                                      type="button"
+                                      aria-expanded={isOpen}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setOpenRow(isOpen ? null : i);
+                                      }}
+                                      className="flex items-center gap-1.5 text-left"
+                                    >
+                                      <span className="text-zinc-400" aria-hidden>
+                                        {isOpen ? "▾" : "▸"}
+                                      </span>
+                                      <span className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${KIND_BADGE[kind]}`}>
+                                        {KIND_LABELS[kind]}
+                                      </span>
+                                    </button>
+                                  </td>
+                                ) : (
+                                  <td
+                                    key={c}
+                                    className={`max-w-[150px] truncate px-2.5 py-2 ${cellTone(row[c] ?? "")}`}
+                                    title={row[c]}
+                                  >
+                                    {row[c] || "-"}
+                                  </td>
+                                )
                               )}
-                              {row["공고 링크"] && (
-                                <a
-                                  href={row["공고 링크"]}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="mt-2 inline-block text-blue-600 underline hover:text-blue-800 dark:text-blue-400"
-                                >
-                                  K-apt 원문 보기
-                                </a>
-                              )}
-                            </td>
-                          </tr>
-                        )}
-                        </Fragment>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+                            </tr>
+                            {isOpen && (
+                              <tr className="border-t border-black/[.06] bg-zinc-50 dark:border-white/[.08] dark:bg-zinc-950">
+                                <td colSpan={columns.length} className="px-4 py-4 text-xs text-zinc-700 dark:text-zinc-300">
+                                  {/* 표가 옆으로 길어도 근거가 화면 왼쪽에 보이도록 고정 */}
+                                  <div className="sticky left-4 max-w-[min(56rem,calc(100vw-6rem))]">
+                                  <p className="font-medium text-black dark:text-zinc-50">{row["상태"]}</p>
+                                  {evidence.length > 0 ? (
+                                    <div className="mt-3 grid gap-2">
+                                      {evidence.map(([col, text]) => (
+                                        <div key={col} className="rounded-lg border border-black/[.06] bg-white p-3 dark:border-white/[.08] dark:bg-zinc-900">
+                                          <span className="font-medium text-black dark:text-zinc-50">
+                                            {col}: {row[col] || "-"}
+                                          </span>
+                                          <p className="mt-1 whitespace-pre-wrap break-all text-zinc-600 dark:text-zinc-400">{text}</p>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <p className="mt-2 text-zinc-500">공고문에서 뽑은 근거 문장이 없어요. 원문을 직접 확인해 주세요.</p>
+                                  )}
+                                  {row["공고 링크"] && (
+                                    <a
+                                      href={row["공고 링크"]}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="mt-3 inline-block font-medium text-blue-600 underline hover:text-blue-800 dark:text-blue-400"
+                                    >
+                                      K-apt 원문 보기
+                                    </a>
+                                  )}
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             )}
-          </div>
+          </section>
         )}
       </main>
     </div>

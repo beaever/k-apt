@@ -11,6 +11,7 @@
 import re
 
 from openpyxl import Workbook
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.comments import Comment
 from openpyxl.styles import Font, PatternFill
 
@@ -20,6 +21,7 @@ from app.parser.step3_parse import (
     CAPITAL_KEYWORD,
     NEEDS_CHECK_PREFIX,
     NOT_APPLICABLE,
+    amount_to_won,
     is_document_line,
     normalize_amount,
 )
@@ -45,7 +47,6 @@ APT_SUFFIX = re.compile(r"\s*\(입대의\)\s*$")
 RECORD_YEARS = re.compile(r"(?<!\d)(\d{1,2})\s*(?:개\s*)?년")
 RECORD_HOUSEHOLDS = re.compile(r"(\d[\d,]*)\s*세대")
 RECORD_COUNT = re.compile(r"(\d+)\s*(?:[건회]|개(?!\s*년))")
-AMOUNT_UNITS = {"억": 1, "천만": 0.1, "백만": 0.01, "만": 0.0001}
 # 아파트 도로포장 입찰에서 상식적인 요건 범위. 벗어나면 숫자를 잘못 읽었을 가능성이 크다.
 # ponytail: 고정 범위 -> 다른 공종(대형 공사 등)으로 넓히면 범위 조정 필요
 CAPITAL_RANGE_EOK = (0.1, 50)
@@ -60,7 +61,7 @@ LINK_FONT = Font(color="FF0563C1", underline="single")
 
 
 def summarize_capital(sentence: str) -> str:
-    """"4) 자본금 : 5억 이상인 업체" -> "5억". 금액을 못 찾으면 원문 그대로."""
+    """"4) 자본금 : 5억 이상인 업체" -> "5억원(500,000,000원)". 금액을 못 찾으면 원문 그대로."""
     keyword = CAPITAL_KEYWORD.search(sentence)
     m = CAPITAL_AMOUNT.search(sentence, keyword.end() if keyword else 0) or CAPITAL_AMOUNT.search(sentence)
     return normalize_amount(m.group()) if m else sentence
@@ -78,21 +79,9 @@ def summarize_record(sentence: str) -> str:
     return f"{cond} {re.sub(r'\s+', '', count.group())}".strip()
 
 
-def _amount_in_eok(amount: str) -> float | None:
-    """"5억", "5천만원", "500,000,000원" -> 억 단위 숫자. 해석 못 하면 None."""
-    m = re.fullmatch(r"([\d,.]+)(억|천만|백만|만)?원?", amount)
-    if not m:
-        return None
-    try:
-        number = float(m.group(1).replace(",", ""))
-    except ValueError:
-        return None
-    return number * AMOUNT_UNITS[m.group(2)] if m.group(2) else number / 1e8
-
-
 # 확인 필요 사유를 사용자가 이해할 수 있도록, 값으로 인정하는 기준을 그대로 안내한다 (step3_parse의 규칙과 맞출 것)
 FIELD_RULES = {
-    "자본금": "자본금은 '자본금' 단어가 있는 줄에서, 같은 줄이나 바로 다음 2줄에 금액(예: 5억, 3천만원, 쉼표가 있는 500,000,000원)이 있을 때만 값으로 인정해요.",
+    "자본금": "자본금은 '자본금' 단어가 있는 줄에서, 같은 줄이나 바로 다음 2줄에 금액(예: 5억, 3천만원, 500,000,000원)이 있을 때만 값으로 인정해요.",
     "실적": (
         "실적 요건 줄은 두 가지만 인정해요. "
         "① '실적' 단어가 있고 건수·횟수·금액(예: 3건, 5회, 10억원)이 같은 줄이나 바로 다음 2줄에 있는 줄, "
@@ -141,8 +130,10 @@ def _suspicions(r: dict, capital: str, record: str) -> list[tuple[str, str]]:
             f"자본금 금액이 여러 개({', '.join(amounts)})",
             f"공고문에 자본금 금액이 여러 개({', '.join(amounts)}) 나와, 어느 금액이 참가 요건인지 정할 수 없어요.",
         ))
-    eok = _amount_in_eok(capital)
-    if eok is not None and not CAPITAL_RANGE_EOK[0] <= eok <= CAPITAL_RANGE_EOK[1]:
+    # 요약된 자본금("5억원(500,000,000원)")의 첫 금액. 요약 전 원문·사유 문구에는 금액 형식이 맨 앞에 오지 않는다
+    amount = CAPITAL_AMOUNT.match(capital)
+    won = amount and amount_to_won(amount.group())
+    if won and not CAPITAL_RANGE_EOK[0] <= won / 1e8 <= CAPITAL_RANGE_EOK[1]:
         reasons.append((
             f"자본금 {capital} 일반 범위 밖",
             f"자본금 {capital}은 일반적인 범위(1천만원~50억)를 벗어나, 숫자를 잘못 읽었을 수 있어요.",
@@ -247,7 +238,10 @@ def build_excel(row_dicts: list[dict], out_path: str) -> None:
     ws.append(COLUMNS)
     status_col = COLUMNS.index("상태") + 1
     for row_dict in row_dicts:
-        ws.append([row_dict[c] for c in COLUMNS])
+        # openpyxl은 제어 문자가 든 글을 저장하지 못하고 예외를 낸다 -> 한 칸 때문에 수집 전체가 실패하지 않게 지운다
+        ws.append([
+            ILLEGAL_CHARACTERS_RE.sub("", v) if isinstance(v := row_dict[c], str) else v for c in COLUMNS
+        ])
         row_no = ws.max_row
         # openpyxl은 "="로 시작하는 글을 수식으로 저장한다 -> 공고문·K-apt 글은 항상 글자로 저장
         for cell in ws[row_no]:

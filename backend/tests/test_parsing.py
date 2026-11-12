@@ -158,7 +158,7 @@ def test_ocr_reads_scan_but_row_still_needs_review():
     assert parsed["capital_found"] and parsed["ocr_used"]
     assert parsed["record"] == step3_parse.NOT_FOUND_REASON
     row = to_row_dict({"bid_num": "1", **parsed})
-    assert row["자본금"] == "5억" and "글자 인식" in row["상태"]
+    assert row["자본금"] == "5억원(500,000,000원)" and "글자 인식" in row["상태"]
 
 
 def test_ocr_stops_when_all_fields_found_and_limits_pages():
@@ -598,10 +598,52 @@ def test_row_values_are_summarized():
     result = to_row_dict(row)
     assert result["공고일자"] == "2026-09-03", result
     assert result["아파트명"] == "더힐포레(3단지)", result
-    assert result["자본금"] == "5억", result
+    assert result["자본금"] == "5억원(500,000,000원)", result
     assert result["실적"] == "500세대 5건", result
     row["record"] = "3) 사업실적 : 공고일로부터 최근 5년간 해당 면허 공사 완료 실적 5건 이상인 업체"
     assert to_row_dict(row)["실적"] == "5년 5건"
+
+
+def test_capital_notation_and_wrapped_household():
+    """클라이언트 요청(2026-11): 숫자 자본금은 "3억원(300,000,000원)"으로, 실적은 세대 조건이 있으면 "N세대 N건" 우선.
+    실측 글자 인식 결과는 쉼표가 빠지고("300000000원") 세대 조건이 줄 끝에서 "300세"/"대이상"으로 잘려 있었다."""
+    from app.parser.step3_parse import normalize_amount
+
+    for text, expected in [
+        ("300,000,000원", "3억원(300,000,000원)"),
+        ("300000000원", "3억원(300,000,000원)"),
+        ("3 억원", "3억원(300,000,000원)"),
+        ("3억5천만원", "3억5천만원(350,000,000원)"),
+        ("5천만", "5천만원(50,000,000원)"),
+        ("1.5억", "1억5천만원(150,000,000원)"),
+    ]:
+        assert normalize_amount(text) == expected, (text, normalize_amount(text))
+
+    parsed = parse_requirements(
+        "-자본금:입찰공고일현재자본금300000000원이상인업체\n"
+        "참가자격\n"
+        "-사업실적:입찰공고일현재최근5년간공동주택아스콘재포장공사실적4건이상300세\n"
+        "대이상5천만원이상공사\n"
+        # 같은 금액을 다른 표기로 적은 줄은 "자본금 금액이 여러 개"로 세지 않는다
+        "자본금 3억원 이상 확인서류\n"
+    )
+    assert parsed["capital_found"] and parsed["capital_amounts"] == ["3억원(300,000,000원)"], parsed
+    result = to_row_dict({**_complete_row(), **parsed})
+    assert result["자본금"] == "3억원(300,000,000원)", result
+    assert result["실적"] == "300세대 4건", result
+
+
+def test_control_characters_do_not_break_excel():
+    """HWP 본문의 제어 문자가 엑셀 저장 오류("cannot be used in worksheets")로 수집 전체를 실패시키지 않는다 (실측: "방수" 검색)."""
+    import tempfile
+
+    from app.export.step4_excel import build_excel
+
+    parsed = parse_requirements("다. 공사 공법: 아크릴그라우팅\x02 방수 공사")
+    assert "\x02" not in parsed["patent_no"], parsed
+    row = to_row_dict({**_complete_row(), "work_name": "옥상\x0b방수공사"})
+    with tempfile.TemporaryDirectory() as d:
+        build_excel([row], os.path.join(d, "result.xlsx"))
 
 
 def test_absent_requirement_labels():

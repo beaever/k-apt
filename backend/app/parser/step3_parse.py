@@ -54,12 +54,18 @@ ABSENCE_CHECK = {
 NOTICE_HOUSEHOLD = re.compile(
     r"(?:단\s*지\s*규\s*모[^\n]{0,40}?|세\s*대\s*수\s*:?\s*)(\d[\d,]*)\s*세\s*대(?!\s*이\s*상)"
 )
-# PDF 추출 텍스트에 섞이는 폭 없는 문자(예: "5\u2060억"). 정규식 매칭을 깨뜨리므로 제거한다.
-INVISIBLE_CHARS = re.compile(r"[\u200b-\u200d\u2060\ufeff]")
+# PDF 추출 텍스트에 섞이는 폭 없는 문자(예: "5\u2060억")와 HWP에 섞이는 제어 문자. 정규식 매칭을 깨뜨리고
+# 제어 문자는 엑셀에 저장할 수 없어(실측: "방수" 검색 공고에서 수집 전체가 오류로 끝남) 제거한다.
+INVISIBLE_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\u200b-\u200d\u2060\ufeff]")
 
 # "정상"으로 인정할 값의 조건. 키워드가 있는 줄이어도 이 조건을 못 채우면(예: "자본금 증명서 제출",
 # "공법 기술사용 협약서") 요건 값이 아니라고 보고 "확인 필요"로 넘긴다 -> "정상" 행은 믿어도 되게 함.
-CAPITAL_AMOUNT = re.compile(r"\d[\d,.]*\s*(?:억|천\s*만|백\s*만|만)|\d{1,3}(?:,\d{3})+\s*원")
+# "3억5천만", "5억", "3천만", "500,000,000원", 쉼표 없는 "300000000원"(7자리 이상, 글자 인식은 쉼표를 자주 놓친다)
+CAPITAL_AMOUNT = re.compile(
+    r"\d[\d,.]*\s*억(?:\s*\d[\d,.]*\s*(?:천\s*만|백\s*만|만))?"
+    r"|\d[\d,.]*\s*(?:천\s*만|백\s*만|만)|\d{1,3}(?:,\d{3})+\s*원|\d{7,}\s*원"
+)
+UNIT_WON = {"억": 10**8, "천만": 10**7, "백만": 10**6, "만": 10**4}
 RECORD_VALUE = re.compile(r"\d+\s*(?:건|회|개(?!\s*년))|\d[\d,.]*\s*(?:억|천\s*만|백\s*만|만)\s*원?")
 
 DOWNLOAD_FAILED_REASON = "공고문을 확보하지 못해 확인 불가"
@@ -255,10 +261,14 @@ def _find_line(lines: list[str], matches, is_valid, continues_from=None) -> tupl
             and not LEADING_MARKER.match(line)
         ):
             merged = f"{lines[i - 1]} {line}"
-        for nxt in [None, *lines[i + 1 : i + 3]]:
+        for k, nxt in enumerate([None, *lines[i + 1 : i + 3]]):
             if nxt is not None:
                 merged = f"{merged} {nxt}"
             if is_valid(merged):
+                # 줄 끝에서 "300세" / "대이상"으로 잘린 세대 조건을 잇는다 (실측: 스캔 PDF 글자 인식 결과)
+                rest = lines[i + k + 1 : i + k + 2]
+                if rest and re.search(r"\d\s*세$", merged) and rest[0].startswith("대"):
+                    merged += rest[0]
                 if not is_document_line(merged):
                     return merged, True
                 document_match = document_match or merged
@@ -274,9 +284,30 @@ def is_document_line(sentence: str) -> bool:
     return bool(DOCUMENT_LINE.search(sentence)) and "이상" not in sentence
 
 
+def amount_to_won(amount: str) -> int | None:
+    """"5억", "3억5천만원", "300,000,000원" -> 원 단위 정수. 해석 못 하면 None."""
+    total = 0.0
+    for number, unit in re.findall(r"([\d,.]+)(억|천만|백만|만)?", re.sub(r"\s+", "", amount)):
+        try:
+            total += float(number.replace(",", "")) * UNIT_WON.get(unit, 1)
+        except ValueError:
+            return None
+    return round(total) or None
+
+
 def normalize_amount(amount: str) -> str:
-    """"5 억원" -> "5억". 금액 표기의 공백과 "억/만" 뒤의 "원"을 없앤다."""
-    return re.sub(r"(억|만)원$", r"\1", re.sub(r"\s+", "", amount))
+    """"5 억원", "500,000,000원" -> "5억원(500,000,000원)". 표기가 달라도 같은 금액이면 같은 글자가 된다."""
+    won = amount_to_won(amount)
+    if won is None:
+        return re.sub(r"\s+", "", amount)
+    eok, rest = divmod(won, 10**8)
+    man, below = divmod(rest, 10**4)
+    if below or not (eok or man):
+        return f"{won:,}원"
+    label = f"{eok}억" if eok else ""
+    if man:
+        label += f"{man // 1000}천만" if man % 1000 == 0 else f"{man:,}만"
+    return f"{label}원({won:,}원)"
 
 
 def parse_requirements(text: str) -> dict:

@@ -12,6 +12,7 @@ from multiprocessing import get_context
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from playwright.async_api import async_playwright
 from pydantic import BaseModel, field_validator
 
@@ -32,7 +33,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage")
+# 데스크톱 앱은 설치 폴더가 업데이트 때 교체되므로 사용자 폴더를 KAPT_STORAGE_DIR로 넘겨준다
+STORAGE_DIR = os.environ.get("KAPT_STORAGE_DIR") or os.path.join(os.path.dirname(__file__), "storage")
 os.makedirs(STORAGE_DIR, exist_ok=True)
 # 이 시간보다 오래된 작업 폴더(다운로드 첨부파일 + 엑셀)는 새 작업 시작 시 삭제
 STORAGE_TTL_SEC = 24 * 3600
@@ -347,3 +349,9 @@ async def download(job_id: str):
         filename="kapt_asphalt_bid_result.xlsx",
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+
+# 데스크톱 앱은 화면(정적 파일)도 이 서버가 내준다 -> 화면 서버(Node.js)가 필요 없다.
+# 모든 경로를 받으므로 API 경로를 가리지 않게 맨 끝에 등록한다.
+if _frontend_dir := os.environ.get("KAPT_FRONTEND_DIR"):
+    app.mount("/", StaticFiles(directory=_frontend_dir, html=True))

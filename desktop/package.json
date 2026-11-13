@@ -1,0 +1,33 @@
+{
+  "name": "kapt-collector",
+  "productName": "KaptCollector",
+  "version": "1.0.0",
+  "description": "K-apt 낙찰공고를 수집해 참가자격 요건을 정리하고 엑셀로 내려받습니다.",
+  "author": "beaever",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.11"
+  },
+  "devDependencies": {
+    "electron": "45.3.1",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "kr.beaever.kapt-collector",
+    "files": ["main.js"],
+    "extraResources": [
+      { "from": "resources", "to": "." },
+      { "from": "../backend/app", "to": "backend/app", "filter": ["**/*", "!storage", "!**/__pycache__"] },
+      { "from": "../frontend/out", "to": "frontend" }
+    ],
+    "win": { "target": [{ "target": "nsis", "arch": ["x64"] }] },
+    "nsis": { "shortcutName": "K-apt 낙찰 정보 수집기", "artifactName": "kapt-collector-setup-${version}.${ext}" },
+    "mac": { "target": "dir", "identity": null },
+    "publish": { "provider": "github", "owner": "beaever", "repo": "k-apt", "releaseType": "release" }
+  }
+}

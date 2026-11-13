@@ -1,0 +1,80 @@
+# Windows용 데스크톱 앱(설치 파일)을 만들고, 만든 앱을 실제로 켜서 화면이 뜨는지 점검한다.
+# v1.2.3 같은 태그를 올리면 설치 파일을 GitHub 릴리스에 올린다 -> 설치된 앱이 자동으로 업데이트된다.
+# K-apt에는 접속하지 않는다 (수집 버튼을 누르지 않음).
+name: 데스크톱 앱 빌드
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths: ["desktop/**", ".github/workflows/desktop-build.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      # 점검 서버는 영어(cp1252) 설정이라 출력에 한글을 못 쓴다 (windows-check.yml과 같은 이유)
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 설치 파일에 넣을 부품 준비 (Python, 수집용 브라우저, 글자 인식 모델, 화면)
+        run: python desktop/prepare.py
+
+      - name: 태그 버전을 앱 버전으로
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: desktop
+        run: npm version "$("${{ github.ref_name }}".TrimStart('v'))" --no-git-tag-version
+
+      - name: 설치 파일 만들기
+        working-directory: desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npm ci --no-audit --no-fund
+          npx electron-builder --publish ${{ startsWith(github.ref, 'refs/tags/v') && 'always' || 'never' }}
+
+      - name: 만든 앱을 켜서 화면 확인 후, 끄면 수집 서버도 꺼지는지 확인
+        shell: pwsh
+        env:
+          KAPT_PORT: 8433
+        run: |
+          Start-Process desktop\dist\win-unpacked\KaptCollector.exe
+          $ok = $false
+          foreach ($i in 1..60) {
+            try {
+              $page = Invoke-WebRequest http://127.0.0.1:8433/ -UseBasicParsing -TimeoutSec 5
+              if ($page.Content -match "K-apt") { $ok = $true; break }
+            } catch { Start-Sleep 3 }
+          }
+          if (-not $ok) { Get-Content "$env:APPDATA\KaptCollector\backend.log" -Tail 60; exit 1 }
+          Write-Host "화면 응답 확인"
+          taskkill /IM KaptCollector.exe
+          Start-Sleep 10
+          try {
+            Invoke-WebRequest http://127.0.0.1:8433/ -UseBasicParsing -TimeoutSec 5 | Out-Null
+            Write-Host "앱을 껐는데 수집 서버가 남아 있음"; exit 1
+          } catch { Write-Host "수집 서버 종료 확인" }
+
+      - name: 앱에 든 Python으로 수집용 브라우저 실행·자체 점검 테스트
+        shell: pwsh
+        run: |
+          $res = "$PWD\desktop\dist\win-unpacked\resources"
+          $env:PLAYWRIGHT_BROWSERS_PATH = "$res\browsers"
+          & "$res\python\python.exe" -c "from playwright.sync_api import sync_playwright as sp; p = sp().start(); b = p.chromium.launch(); print('browser', b.version); b.close(); p.stop()"
+          if ($LASTEXITCODE) { exit 1 }
+          & "$res\python\python.exe" backend\tests\test_parsing.py
+          if ($LASTEXITCODE) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kapt-collector-setup
+          path: desktop/dist/*.exe

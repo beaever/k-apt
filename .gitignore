@@ -21,3 +21,8 @@ frontend/.env*
 frontend/*.tsbuildinfo
 frontend/next-env.d.ts
 frontend/npm-debug.log*
+
+# desktop (Electron)
+desktop/node_modules/
+desktop/resources/
+desktop/dist/

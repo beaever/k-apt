@@ -148,6 +148,17 @@ kapt-asphalt-collector/
 - `.git` 폴더가 있는 개발 폴더에서는 업데이트를 건너뛰어 작업 중인 코드를 덮어쓰지 않습니다.
 - 업데이트 로직 점검: `python3 backend/tests/test_launcher.py`
 
+### 개발자용: Windows 설치 파일 (데스크톱 앱, `desktop/`)
+
+설치 파일 하나로 끝나는 형태입니다. Python·수집용 브라우저·글자 인식 모델·화면이 모두 들어 있어 설치 후 인터넷으로 추가로 받는 것이 없습니다.
+
+- **만들기**: `v1.0.0` 같은 태그를 올리면 `데스크톱 앱 빌드` 워크플로가 설치 파일을 만들어 GitHub 릴리스에 올립니다. 설치된 앱은 켤 때 새 릴리스를 확인해 뒤에서 받고, 끌 때 설치합니다.
+- **시험용**: 워크플로를 수동 실행하면 릴리스 없이 설치 파일만 결과물(artifact)로 받을 수 있습니다.
+- **직접 만들기** (만드는 OS용으로만 만들어짐): `python desktop/prepare.py` → `cd desktop && npm ci && npm run dist`
+- **개발 실행**: `DESKTOP_BUILD=1 NEXT_PUBLIC_API_BASE= npm run build`(frontend) 후 `cd desktop && npm start` — `backend/venv`와 `frontend/out`을 씁니다.
+- 수집 결과·공고 저장본·기록(`backend.log`)은 설치 폴더가 아니라 `%APPDATA%\KaptCollector`에 있습니다.
+- 코드 서명이 없어 처음 설치할 때 Windows가 "PC 보호" 경고를 띄웁니다 → **추가 정보 → 실행**.
+
 ### 개발자용 실행 요약
 
 ```bash

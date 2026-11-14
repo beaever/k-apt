@@ -103,8 +103,15 @@ def test_absent_requirement_is_not_applicable_but_unextractable_file_is_not():
             r = p3.parse_files([doc])
             assert r["capital_found"] and "5억원" in r["capital"], r
             assert r["patent_no"] == p3.NOT_APPLICABLE and r["patent_no_found"], r
+            # 공법번호는 의뢰처 요청으로 번호가 없으면 미적용. 읽지 못한 파일은 상태 칸 사유로 확인 필요가 된다.
             r = p3.parse_files([doc, os.path.join(d, "scan.pdf")])
-            assert r["patent_no"] == p3.NOT_FOUND_REASON and not r["patent_no_found"], r
+            assert r["patent_no"] == p3.NOT_APPLICABLE and r["extract_errors"], r
+            assert to_row_dict(r)["상태"].startswith("확인 필요"), to_row_dict(r)
+            # 공법 이름만 있고 등록번호가 없어도 미적용
+            text = "자본금 5억원 이상인 업체\n다. 공사 공법: 아크릴그라우팅 방수 공법\n"
+            r = p3.parse_files([doc])
+            assert r["patent_no"] == p3.NOT_APPLICABLE and r["patent_no_found"], r
+            assert to_row_dict(r)["공법번호"] == "미적용", to_row_dict(r)
         finally:
             p3.extract_text = orig
 
@@ -408,10 +415,8 @@ def test_record_requirement_in_complex_count_wins_over_document_line():
 
 
 def test_check_reason_explains_the_rule():
-    """확인 필요 행은 짧은 사유와 함께, 값으로 인정하는 기준까지 안내한다 (엑셀은 상태 칸 메모)."""
-    from openpyxl import load_workbook
-
-    from app.export.step4_excel import GUIDE_KEY, build_excel
+    """확인 필요 행은 짧은 사유와 함께, 값으로 인정하는 기준까지 안내한다 (화면에서 행을 펼치면 보임)."""
+    from app.export.step4_excel import GUIDE_KEY
 
     # 래미안금광 공고를 고치기 전처럼: 실적 요건 줄을 못 찾고 제출서류 줄만 후보로 남은 경우
     with tempfile.TemporaryDirectory() as tmp:
@@ -429,13 +434,6 @@ def test_check_reason_explains_the_rule():
     guide = row[GUIDE_KEY].split("\n")
     assert "두 가지만 인정" in guide[0] and "M개 단지 이상" in guide[0] and "실적증명서 제출" in guide[0], guide
     assert "글자 인식" in guide[1]
-
-    with tempfile.TemporaryDirectory() as tmp:
-        path = os.path.join(tmp, "r.xlsx")
-        build_excel([row], path)
-        ws = load_workbook(path).active
-        status = ws.cell(row=2, column=ws.max_column)
-    assert status.comment and "왜 확인이 필요한가요?" in status.comment.text and "두 가지만 인정" in status.comment.text
 
 
 def test_patent_number_split_across_lines():
@@ -455,7 +453,7 @@ def test_excel_keeps_text_starting_with_equals_as_text():
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "r.xlsx")
         build_excel([row], path)
-        cells = list(load_workbook(path).active.iter_rows(min_row=2, values_only=False))[0]
+        cells = list(load_workbook(path)["리스트"].iter_rows(min_row=3, values_only=False))[0]
     assert all(c.data_type != "f" for c in cells)
     assert '=HYPERLINK("http://x")' in [c.value for c in cells]
 
@@ -646,35 +644,36 @@ def test_control_characters_do_not_break_excel():
         build_excel([row], os.path.join(d, "result.xlsx"))
 
 
-def test_analysis_sheet_counts():
-    """분석표: 낙찰방법·자본금 구간·공법 적용 여부·공법 번호별 건수. 확정 안 된 칸은 '확인 필요'로 따로 센다."""
-    import tempfile
+def test_client_excel_template():
+    """엑셀은 의뢰처 양식: 자본금은 억 단위 숫자, 제한없음·미적용은 빈칸, 확정 안 된 값은 글자 그대로(분석표에서 확인 필요로 셈)."""
+    from datetime import date
 
     from openpyxl import load_workbook
 
-    from app.export.step4_excel import analyze, build_excel
+    from app.export.step4_excel import build_excel, export_filename, to_sheet_row
 
-    def row(method, capital, patent):
-        return {"낙찰방법": method, "자본금": capital, "공법번호": patent}
-
+    base = {**to_row_dict(_complete_row()), "공고일자": "2026-10-01", "세대수": "1,098", "낙찰금액": "95,900,000"}
     rows = [
-        row("최저가", "5억원(500,000,000원)", "10-2767595"),
-        row("최저가", "1억5천만원(150,000,000원)", "10-2767595, 10-2222229"),
-        row("적격심사", "제한없음", "미적용"),
-        row("최저가", "3억5천만원(350,000,000원)", "확인 필요: 공법 관련 문구 없음"),
-        row("", "확인 필요: 자본금 금액 이상", ""),
+        {**base, "자본금": "5억원(500,000,000원)", "공법번호": "10-2767595", "실적": "500세대 5건", "낙찰업체": "가건설"},
+        {**base, "자본금": "1억5천만원(150,000,000원)", "공법번호": "10-2767595, 10-2222229", "낙찰업체": "가건설"},
+        {**base, "자본금": "제한없음", "공법번호": "미적용", "실적": "제한없음", "낙찰방법": "적격심사"},
+        {**base, "자본금": "[확인 필요] 자본금 금액 이상", "공법번호": "", "낙찰방법": ""},
     ]
-    t = analyze(rows)
-    assert t["낙찰방법"] == [("최저가", 3), ("적격심사", 1), ("확인 필요", 1)], t
-    capital = dict(t["자본금"])
-    assert (capital["제한없음"], capital["1.5억"], capital["5억"], capital["3.5억"], capital["확인 필요"]) == (1, 1, 1, 1, 1), capital
-    assert capital["15억"] == 0 and sum(capital.values()) == len(rows), capital
-    assert t["공법"] == [("적용", 2), ("미적용", 1), ("확인 필요", 2)], t
-    assert t["공법번호"] == [("10-2767595", 2), ("10-2222229", 1)], t
+    sheet = [to_sheet_row(i, r) for i, r in enumerate(rows, start=1)]
+    assert sheet[0][:2] == [1, date(2026, 10, 1)] and sheet[0][4] == 1098 and sheet[0][10] == 95900000, sheet[0]
+    assert [r[5] for r in sheet] == [5, 1.5, None, "[확인 필요] 자본금 금액 이상"], sheet
+    assert sheet[2][6] is None and sheet[2][7] is None and sheet[3][8] is None, sheet
+    cond = {"regions": ["서울", "인천", "경기"], "keyword": "아스콘", "date_start": date(2026, 1, 1), "date_end": date(2026, 11, 3)}
+    assert export_filename(cond) == "2026년도 수도권 아스콘 낙찰리스트(2026.01.01~2026.11.03).xlsx"
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "result.xlsx")
-        build_excel([{**to_row_dict(_complete_row()), **r} for r in rows], path)
-        assert load_workbook(path).sheetnames == ["낙찰결과", "분석표"]
+        build_excel(rows, path, cond)
+        wb = load_workbook(path)
+    assert wb.sheetnames == ["표지", "리스트", "분석표", "상세분석"], wb.sheetnames
+    assert "입찰공고일 -낙찰공고-" in wb["표지"]["A3"].value and not wb["표지"]._images
+    assert [c.value for c in wb["리스트"][2]] == ["no", "공고일자", "아파트명", "공사명", "세대수", "자본금", "실적", "공법번호", "낙찰방법", "낙찰업체", "낙찰금액"]
+    formulas = [c.value for row in wb["분석표"].iter_rows() for c in row if isinstance(c.value, str) and c.value.startswith("=")]
+    assert '=COUNTIF(리스트!$H$3:$H$6,"*10-2767595*")' in formulas and "=COUNTIF(리스트!$F$3:$F$6,1.5)" in formulas, formulas
 
 
 def test_absent_requirement_labels():

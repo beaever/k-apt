@@ -440,6 +440,11 @@ def parse_files(paths: list[str], fetch_error: str | None = None, ocr: bool = Fa
         if found:
             result[key] = value
             result[f"{key}_found"] = True
+        elif key == "patent_no":
+            # 의뢰처 요청(2026-11-14): 읽은 공고문 어디에도 등록번호가 없으면 공법 이름만 있어도 미적용.
+            # 스캔 PDF·읽지 못한 첨부파일이 있으면 상태 칸의 다른 사유로 여전히 "확인 필요"가 된다.
+            result[key] = NOT_APPLICABLE
+            result[f"{key}_found"] = True
         elif value:
             result[key] = NEEDS_CHECK_PREFIX + value
             result[f"{key}_found"] = False

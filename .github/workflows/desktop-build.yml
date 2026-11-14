@@ -34,6 +34,14 @@ jobs:
         working-directory: desktop
         run: npm version "$("${{ github.ref_name }}".TrimStart('v'))" --no-git-tag-version --allow-same-version
 
+      # electron-builder는 파일마다 동시에 릴리스를 만들려다 같은 태그에 릴리스를 두 개 만든다 (v1.0.0에서 발생)
+      # -> 미리 하나 만들어 두면 거기에 올린다
+      - name: 릴리스 미리 만들기
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --notes "Windows 설치 파일: kapt-collector-setup-*.exe"
+
       - name: 설치 파일 만들기
         working-directory: desktop
         env:

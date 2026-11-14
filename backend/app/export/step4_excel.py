@@ -9,6 +9,7 @@
 """
 
 import re
+from collections import Counter
 
 from openpyxl import Workbook
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
@@ -21,6 +22,7 @@ from app.parser.step3_parse import (
     CAPITAL_KEYWORD,
     NEEDS_CHECK_PREFIX,
     NOT_APPLICABLE,
+    PATENT_NUMBER,
     amount_to_won,
     is_document_line,
     normalize_amount,
@@ -230,6 +232,81 @@ def to_row_dict(r: dict) -> dict:
     return values
 
 
+# 의뢰처 분석표 양식의 자본금 구간(억). 데이터에 다른 금액이 있으면 그 금액 행이 더해진다.
+CAPITAL_BINS_EOK = [1, 1.5, 2, 3, 4, 4.5, 5, 6, 7, 8, 10, 15]
+# 값이 확정되지 않은 칸(확인 필요 사유·수집 실패·빈 칸)은 어느 구간에도 넣지 않고 따로 센다
+UNSURE = "확인 필요"
+TITLE_FONT = Font(bold=True, size=12)
+HEADER_FONT = Font(bold=True)
+
+
+def analyze(row_dicts: list[dict]) -> dict[str, list[tuple[str, int]]]:
+    """낙찰결과 행들을 분석표 항목별 (구분, 건수) 목록으로 센다. 낙찰결과 칸에 보이는 값 그대로 센다."""
+    methods = Counter(r["낙찰방법"] or UNSURE for r in row_dicts)
+    method_rows = sorted(((k, n) for k, n in methods.items() if k != UNSURE), key=lambda kv: -kv[1])
+
+    capitals = Counter()
+    for r in row_dicts:
+        value = r["자본금"]
+        amount = CAPITAL_AMOUNT.match(value)
+        capitals[value if value == "제한없음" else (amount and amount_to_won(amount.group())) or UNSURE] += 1
+    wons = sorted({int(e * 10**8) for e in CAPITAL_BINS_EOK} | {k for k in capitals if isinstance(k, int)})
+    capital_rows = [("제한없음", capitals["제한없음"])] + [(f"{w / 10**8:g}억", capitals[w]) for w in wons]
+
+    patents, applied, not_applied = Counter(), 0, 0
+    for r in row_dicts:
+        value = r["공법번호"]
+        if value == "미적용":
+            not_applied += 1
+        elif PATENT_NUMBER.match(value):
+            applied += 1
+            patents.update(list(dict.fromkeys(f"{a}-{b}" for a, b in PATENT_NUMBER.findall(value))))
+    total = len(row_dicts)
+    return {
+        "낙찰방법": method_rows + [(UNSURE, methods[UNSURE])],
+        "자본금": capital_rows + [(UNSURE, capitals[UNSURE])],
+        "공법": [("적용", applied), ("미적용", not_applied), (UNSURE, total - applied - not_applied)],
+        "공법번호": patents.most_common(),
+    }
+
+
+def _write_table(ws, top: int, left: int, title: str, header: list[str], rows: list[list], total_label: str | None):
+    """제목·머리글·행(마지막 열이 비율)을 쓰고 다음 표를 쓸 행 번호를 돌려준다."""
+    ws.cell(row=top, column=left, value=title).font = TITLE_FONT
+    for i, h in enumerate(header):
+        ws.cell(row=top + 1, column=left + i, value=h).font = HEADER_FONT
+    for r, values in enumerate(rows, start=top + 2):
+        for i, v in enumerate(values):
+            ws.cell(row=r, column=left + i, value=v)
+        ws.cell(row=r, column=left + len(values) - 1).number_format = "0.0%"
+    end = top + 2 + len(rows)
+    if total_label:
+        ws.cell(row=end, column=left, value=total_label).font = HEADER_FONT
+        ws.cell(row=end, column=left + 1, value=sum(v[1] for v in rows)).font = HEADER_FONT
+        end += 1
+    return end + 1
+
+
+def build_analysis_sheet(ws, row_dicts: list[dict]) -> None:
+    """의뢰처 분석표 양식: 낙찰방법·자본금·공법(적용/미적용) 건수와 비율, 공법 번호별 건수."""
+    # shortcut: 수식이 아니라 값으로 쓴다 -> 낙찰결과 시트를 고쳐도 표가 바뀌지 않음. 직접 고쳐 쓰는 일이 잦으면 COUNTIF 수식으로
+    tables, total = analyze(row_dicts), len(row_dicts)
+    ws["A1"] = f"전체 {total}건 · 낙찰결과 시트의 값으로 셉니다. 값이 확정되지 않은 칸(확인 필요·수집 실패)은 '{UNSURE}'로 따로 셉니다."
+    ws["A1"].font = Font(color="FF6C757D")
+    ratio = (lambda n: n / total) if total else (lambda n: 0)
+    row = 3
+    for title in ("낙찰방법", "자본금", "공법"):
+        rows = [[label, n, ratio(n)] for label, n in tables[title]]
+        row = _write_table(ws, row, 1, title, ["구분", "건수", "비율"], rows, "합계")
+    applied = dict(tables["공법"])["적용"]
+    patent_rows = [[i, no, n, n / applied] for i, (no, n) in enumerate(tables["공법번호"], start=1)]
+    _write_table(ws, 3, 5, "공법 번호 (공법 적용 공고)", ["no", "공법 번호", "건수", "비율"], patent_rows, None)
+    if applied:
+        ws.cell(row=5 + len(patent_rows), column=5, value="한 공고에 공법 번호가 여럿이면 번호마다 셉니다.").font = Font(color="FF6C757D")
+    for col, width in zip("ABCDEFGH", (14, 8, 8, 4, 5, 14, 8, 8)):
+        ws.column_dimensions[col].width = width
+
+
 def build_excel(row_dicts: list[dict], out_path: str) -> None:
     """to_row_dict()로 이미 변환된 행(dict)들을 받아 엑셀로 저장."""
     wb = Workbook()
@@ -270,4 +347,5 @@ def build_excel(row_dicts: list[dict], out_path: str) -> None:
             apt_cell.hyperlink = row_dict["공고 링크"]
             apt_cell.font = LINK_FONT
     ws.freeze_panes = "A2"
+    build_analysis_sheet(wb.create_sheet("분석표"), row_dicts)
     wb.save(out_path)

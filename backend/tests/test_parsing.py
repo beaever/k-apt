@@ -646,6 +646,37 @@ def test_control_characters_do_not_break_excel():
         build_excel([row], os.path.join(d, "result.xlsx"))
 
 
+def test_analysis_sheet_counts():
+    """분석표: 낙찰방법·자본금 구간·공법 적용 여부·공법 번호별 건수. 확정 안 된 칸은 '확인 필요'로 따로 센다."""
+    import tempfile
+
+    from openpyxl import load_workbook
+
+    from app.export.step4_excel import analyze, build_excel
+
+    def row(method, capital, patent):
+        return {"낙찰방법": method, "자본금": capital, "공법번호": patent}
+
+    rows = [
+        row("최저가", "5억원(500,000,000원)", "10-2767595"),
+        row("최저가", "1억5천만원(150,000,000원)", "10-2767595, 10-2222229"),
+        row("적격심사", "제한없음", "미적용"),
+        row("최저가", "3억5천만원(350,000,000원)", "확인 필요: 공법 관련 문구 없음"),
+        row("", "확인 필요: 자본금 금액 이상", ""),
+    ]
+    t = analyze(rows)
+    assert t["낙찰방법"] == [("최저가", 3), ("적격심사", 1), ("확인 필요", 1)], t
+    capital = dict(t["자본금"])
+    assert (capital["제한없음"], capital["1.5억"], capital["5억"], capital["3.5억"], capital["확인 필요"]) == (1, 1, 1, 1, 1), capital
+    assert capital["15억"] == 0 and sum(capital.values()) == len(rows), capital
+    assert t["공법"] == [("적용", 2), ("미적용", 1), ("확인 필요", 2)], t
+    assert t["공법번호"] == [("10-2767595", 2), ("10-2222229", 1)], t
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "result.xlsx")
+        build_excel([{**to_row_dict(_complete_row()), **r} for r in rows], path)
+        assert load_workbook(path).sheetnames == ["낙찰결과", "분석표"]
+
+
 def test_absent_requirement_labels():
     """요건이 없다고 판정된 칸만 제한없음/미적용으로 보이고, 못 찾은 칸은 사유가 그대로 남는다."""
     from app.parser.step3_parse import NOT_APPLICABLE, NOT_FOUND_REASON

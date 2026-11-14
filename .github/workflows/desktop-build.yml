@@ -40,7 +40,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --notes "Windows 설치 파일: kapt-collector-setup.exe (항상 최신: https://github.com/beaever/k-apt/releases/latest/download/kapt-collector-setup.exe)"
+        # 한 줄로 쓰면 글 안의 ": "를 YAML이 키로 읽어 워크플로 전체가 깨진다 -> 블록으로 쓴다
+        run: |
+          gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --notes "Windows 설치 파일: kapt-collector-setup.exe (항상 최신: https://github.com/beaever/k-apt/releases/latest/download/kapt-collector-setup.exe)"
 
       - name: 설치 파일 만들기
         working-directory: desktop

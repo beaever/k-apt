@@ -40,7 +40,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --notes "Windows 설치 파일: kapt-collector-setup-*.exe"
+        run: gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --notes "Windows 설치 파일: kapt-collector-setup.exe (항상 최신: https://github.com/beaever/k-apt/releases/latest/download/kapt-collector-setup.exe)"
 
       - name: 설치 파일 만들기
         working-directory: desktop

@@ -26,7 +26,7 @@
       { "from": "../frontend/out", "to": "frontend" }
     ],
     "win": { "target": [{ "target": "nsis", "arch": ["x64"] }] },
-    "nsis": { "shortcutName": "K-apt 낙찰 정보 수집기", "artifactName": "kapt-collector-setup-${version}.${ext}" },
+    "nsis": { "shortcutName": "K-apt 낙찰 정보 수집기", "artifactName": "kapt-collector-setup.${ext}" },
     "mac": { "target": "dir", "identity": null },
     "publish": { "provider": "github", "owner": "beaever", "repo": "k-apt", "releaseType": "release" }
   }

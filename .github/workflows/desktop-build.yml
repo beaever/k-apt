@@ -83,6 +83,8 @@ jobs:
           if ($LASTEXITCODE) { exit 1 }
           & "$res\python\python.exe" backend\tests\test_parsing.py
           if ($LASTEXITCODE) { exit 1 }
+          & "$res\python\python.exe" backend\tests\check_parse_pool.py
+          if ($LASTEXITCODE) { exit 1 }
 
       - uses: actions/upload-artifact@v4
         with:

@@ -295,9 +295,11 @@ async def _run_job(job_id: str, req: CollectRequest, job_dir: str):
         # 표시용 공고일자는 날짜만 남으므로, 같은 날짜도 시각순이 되도록 변환 전 원본 일시로 정렬
         results.sort(key=lambda r: r.get("announce_date", ""))
         row_dicts = [step4_excel.to_row_dict(r) for r in results]
-        step4_excel.build_excel(row_dicts, os.path.join(job_dir, "result.xlsx"))
+        cond = {"regions": req.regions, "keyword": req.keyword, "date_start": req.date_start, "date_end": req.date_end}
+        step4_excel.build_excel(row_dicts, os.path.join(job_dir, "result.xlsx"), cond)
         job.update(
             status="done",
+            filename=step4_excel.export_filename(cond),
             rows=row_dicts,
             success_count=sum(1 for rd in row_dicts if rd["상태"] == step4_excel.STATUS_OK),
             check_count=sum(1 for rd in row_dicts if rd["상태"].startswith(step4_excel.STATUS_CHECK)),
@@ -346,7 +348,8 @@ async def download(job_id: str):
         raise HTTPException(status_code=404, detail="결과 파일을 찾을 수 없습니다.")
     return FileResponse(
         path,
-        filename="kapt_asphalt_bid_result.xlsx",
+        # 서버가 재시작돼 작업 정보가 없으면 기본 이름으로 받는다
+        filename=JOBS.get(job_id, {}).get("filename", "kapt_bid_result.xlsx"),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 

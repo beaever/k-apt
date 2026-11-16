@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
@@ -50,6 +51,12 @@ CACHE_DETAIL_FILE = "detail.json"
 DETAIL_CONCURRENCY = int(os.environ.get("DETAIL_CONCURRENCY", "5"))
 
 FETCH_ATTEMPTS = 3
+# K-apt가 잠깐 느리거나 응답이 끊기면 목록 검색·세션 확보가 한 번에 실패한다 (실측: 클라이언트 PC에서
+# 11건이 모두 "수집 실패"로 끝났다가 다시 하면 정상). 접속 제한(KaptAccessBlocked)은 다시 하지 않는다.
+CONNECT_ATTEMPTS = 3
+CONNECT_RETRY_DELAYS_SEC = (3, 10)
+# uvicorn 로거라 실행기·설치형의 backend.log에 그대로 남는다
+LOG = logging.getLogger("uvicorn.error")
 
 # PDF/HWP 파싱은 순수 파이썬 CPU 작업이라 스레드로 돌리면 GIL을 잡고 있어 크롤링(이벤트 루프)까지 느려진다
 # (실측: 공고 1건 처리가 단독 0.3초 -> 파싱과 동시 실행 시 수 초). 별도 프로세스에서 돌린다.
@@ -121,9 +128,13 @@ async def run_collect(
         page = await context.new_page()
 
         job["message"] = "K-apt에 접속해 조건에 맞는 낙찰공고 목록을 검색하고 있어요"
-        await step1_search.open_bid_result_page(page)
-        await step1_search.search(page, regions, keyword, str(date_start), str(date_end))
+        started = time.monotonic()
 
+        async def open_list():
+            await step1_search.open_bid_result_page(page)
+            await step1_search.search(page, regions, keyword, str(date_start), str(date_end))
+
+        await _retry("목록 검색", open_list)
         total_pages = await step1_search.get_total_pages(page)
         rows: list[dict] = []
         seen_bid_nums: set[str] = set()
@@ -146,6 +157,8 @@ async def run_collect(
 
         job["total"] = len(rows)
         job["message"] = "공고별 상세정보와 입찰공고문(HWP/PDF)을 처리하고 있어요"
+        LOG.info("수집: 목록 %d건 (%.1f초) 지역=%s 검색어=%s 기간=%s~%s", len(rows), time.monotonic() - started,
+                 ",".join(regions), keyword, date_start, date_end)
         worker_count = min(DETAIL_CONCURRENCY, len(rows))
         workers = [
             asyncio.create_task(_detail_worker(browser, row_queue, results, job))
@@ -158,10 +171,30 @@ async def run_collect(
     if "blocked" in job:
         raise step1_search.KaptAccessBlocked(job["blocked"])
     # 모든 워커가 죽어 처리되지 못한 행은 None으로 남는다 -> 실패 행으로 채워 목록에서 누락되지 않게 함
-    return [
+    results = [
         r or {**row, "success": False, "error": "처리되지 않음(브라우저 세션 확보 실패)"}
         for r, row in zip(results, rows)
     ]
+    for r in results:
+        if not r.get("success", True) or r.get("extract_failed"):
+            LOG.warning("수집 실패 %s: %s", r.get("bid_num"), (r.get("error") or r.get("capital") or "").splitlines()[0][:300])
+    LOG.info("수집: 끝 %d건 (%.1f초)", len(results), time.monotonic() - started)
+    return results
+
+
+async def _retry(what: str, action):
+    """K-apt 접속 단계를 잠깐의 끊김에 대비해 몇 번 더 시도한다. 접속 제한은 바로 넘긴다."""
+    for attempt in range(CONNECT_ATTEMPTS):
+        try:
+            return await action()
+        except step1_search.KaptAccessBlocked:
+            raise
+        except Exception as e:
+            if attempt == CONNECT_ATTEMPTS - 1:
+                raise
+            delay = CONNECT_RETRY_DELAYS_SEC[min(attempt, len(CONNECT_RETRY_DELAYS_SEC) - 1)]
+            LOG.warning("%s 실패, %d초 뒤 다시 시도 (%d/%d): %s", what, delay, attempt + 1, CONNECT_ATTEMPTS, str(e).splitlines()[0][:200])
+            await asyncio.sleep(delay)
 
 
 async def _detail_worker(browser, row_queue: "asyncio.Queue", results: list, job: dict):
@@ -177,7 +210,7 @@ async def _detail_worker(browser, row_queue: "asyncio.Queue", results: list, job
     # -> 네트워크 대기와 파싱이 겹쳐 워커당 공고 1건 처리 시간이 줄어든다.
     parse_tasks: list[asyncio.Task] = []
     try:
-        await step1_search.establish_session(detail_page)
+        await _retry("세션 확보", lambda: step1_search.establish_session(detail_page))
         while "blocked" not in job:
             try:
                 idx, row = row_queue.get_nowait()
@@ -308,6 +341,7 @@ async def _run_job(job_id: str, req: CollectRequest, job_dir: str):
     except step1_search.KaptAccessBlocked as e:
         job.update(status="error", message=str(e))
     except Exception as e:
+        LOG.exception("수집 작업 오류")
         job.update(status="error", message=f"수집 중 오류가 발생했습니다({e})")
 
 

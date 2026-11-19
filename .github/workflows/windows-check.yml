@@ -72,6 +72,9 @@ jobs:
           if ($LASTEXITCODE) { exit 1 }
           backend\venv\Scripts\python.exe backend\tests\test_launcher.py
           if ($LASTEXITCODE) { exit 1 }
+          # 실제 수집과 같은 별도 분석 프로세스로 공고문 1건 분석 (Windows에서만 깨지는 경우 대비)
+          backend\venv\Scripts\python.exe backend\tests\check_parse_pool.py
+          if ($LASTEXITCODE) { exit 1 }
 
       - uses: actions/upload-artifact@v4
         if: always()

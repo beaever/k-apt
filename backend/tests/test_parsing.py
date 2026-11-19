@@ -698,6 +698,39 @@ def test_unique_path_does_not_overwrite_same_filename():
         assert first != second and second.endswith("공고문_1.hwp"), second
 
 
+def test_connect_retry():
+    """목록 검색·세션 확보는 잠깐의 실패를 다시 시도하고, 접속 제한은 다시 시도하지 않는다."""
+    import asyncio
+
+    from app import main as m
+    from app.crawler.step1_search import KaptAccessBlocked
+
+    calls = []
+
+    async def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise TimeoutError("Timeout 30000ms exceeded")
+        return "ok"
+
+    async def blocked():
+        calls.append(1)
+        raise KaptAccessBlocked("제한")
+
+    orig = m.CONNECT_RETRY_DELAYS_SEC
+    m.CONNECT_RETRY_DELAYS_SEC = (0, 0)
+    try:
+        assert asyncio.run(m._retry("목록 검색", flaky)) == "ok" and len(calls) == 3
+        calls.clear()
+        try:
+            asyncio.run(m._retry("세션 확보", blocked))
+            raise AssertionError("접속 제한이 다시 시도됨")
+        except KaptAccessBlocked:
+            assert len(calls) == 1
+    finally:
+        m.CONNECT_RETRY_DELAYS_SEC = orig
+
+
 def test_collect_request_rejects_empty_or_unknown_regions():
     from app.main import CollectRequest
 

@@ -90,7 +90,7 @@ def _ocr_engine():
     # 방향 판별(use_cls)을 켜면 똑바른 줄을 180도 돌려 읽어 "자본금" 줄을 놓친다 (실측 4건 중 2건)
     return RapidOCR(params={
         "Rec.lang_type": LangRec.KOREAN,
-        # v5는 v4보다 2~3배 빠르고 띄어쓰기·괄호도 살린다 (스캔 공고 3건 실측 104초 -> 44초, 추출 결과 동일)
+        # v5는 v4보다 쪽당 글자 읽기가 약 4배 빠르고 띄어쓰기·괄호도 살린다 (스캔 공고 3건 합계 1.7배, 추출 결과 동일 - PR #28)
         "Rec.ocr_version": OCRVersion.PPOCRV5,
         "Rec.model_type": ModelType.MOBILE,
         "Global.use_cls": False,

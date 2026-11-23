@@ -60,7 +60,13 @@ def main():
         env={"PLAYWRIGHT_BROWSERS_PATH": os.path.join(RESOURCES, "browsers")},
     )
     # 한국어 글자 인식 모델은 처음 쓸 때 내려받는다 -> 설치본은 설치 폴더에 쓸 수 없을 수 있어 미리 받아 둔다
-    run(PYTHON, "-c", "from app.parser.step3_parse import _ocr_engine; _ocr_engine()", cwd=BACKEND)
+    # 엔진은 모델을 처음 인식할 때 불러오므로 직접 불러 내려받게 한다
+    # shortcut: rapidocr 내부 함수(_load_det_model/_load_rec_model)를 쓴다, rapidocr를 올릴 때 이름 확인
+    run(
+        PYTHON, "-c",
+        "from app.parser.step3_parse import _ocr_engine; e = _ocr_engine(); e._load_det_model(); e._load_rec_model()",
+        cwd=BACKEND,
+    )
     for folder, dirs, _ in os.walk(PYTHON_DIR):
         if "__pycache__" in dirs:
             shutil.rmtree(os.path.join(folder, "__pycache__"))

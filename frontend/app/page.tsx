@@ -6,6 +6,9 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8420";
 
 const REGIONS = ["서울", "인천", "경기"];
 
+// 의뢰처가 정한 공종(2026-11-24). "·"로 묶은 검색어는 각각 검색해 한 목록으로 합친다 (서버 search_terms)
+const WORK_TYPES = ["아스콘·아스팔트", "보도블럭", "에폭시", "재도장", "방수"];
+
 // toISOString()은 UTC 기준이라 한국 시간 오전 9시 이전엔 하루 전 날짜가 나온다 -> 로컬 시간대로 보정
 const toDateInputValue = (d: Date) =>
   new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
@@ -117,7 +120,7 @@ const describeError = (err: unknown) =>
 
 export default function Home() {
   const [regions, setRegions] = useState<string[]>(["서울", "인천", "경기"]);
-  const [keyword, setKeyword] = useState("아스콘");
+  const [keyword, setKeyword] = useState(WORK_TYPES[0]);
   const [dateStart, setDateStart] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() - 30);
@@ -429,8 +432,21 @@ export default function Home() {
 
             <div className="mt-5">
               <label htmlFor="keyword" className={labelClass}>
-                검색어
+                공종 (검색어)
               </label>
+              <div className="mb-2 grid grid-cols-2 gap-2">
+                {WORK_TYPES.map((w) => (
+                  <button
+                    key={w}
+                    type="button"
+                    aria-pressed={keyword === w}
+                    onClick={() => setKeyword(w)}
+                    className={`${chip(keyword === w)} ${w === WORK_TYPES[0] ? "col-span-2" : ""}`}
+                  >
+                    {w}
+                  </button>
+                ))}
+              </div>
               <div className="relative">
                 <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-subtle">
                   <SearchIcon />
@@ -440,7 +456,7 @@ export default function Home() {
                   type="text"
                   value={keyword}
                   onChange={(e) => setKeyword(e.target.value)}
-                  placeholder="예: 아스콘"
+                  placeholder="직접 입력 (여러 개는 쉼표로 구분)"
                   className={`${inputClass} pl-9`}
                 />
               </div>

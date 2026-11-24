@@ -106,6 +106,13 @@ class CollectRequest(BaseModel):
             raise ValueError(f"지원하지 않는 지역입니다: {', '.join(unknown)}")
         return regions
 
+    @field_validator("keyword")
+    @classmethod
+    def _validate_keyword(cls, keyword):
+        if not search_terms(keyword):
+            raise ValueError("검색어를 입력해야 합니다.")
+        return keyword
+
     @field_validator("date_end")
     @classmethod
     def _validate_range(cls, date_end, info):
@@ -127,26 +134,29 @@ async def run_collect(
         context = await browser.new_context(accept_downloads=True)
         page = await context.new_page()
 
-        job["message"] = "K-apt에 접속해 조건에 맞는 낙찰공고 목록을 검색하고 있어요"
         started = time.monotonic()
-
-        async def open_list():
-            await step1_search.open_bid_result_page(page)
-            await step1_search.search(page, regions, keyword, str(date_start), str(date_end))
-
-        await _retry("목록 검색", open_list)
-        total_pages = await step1_search.get_total_pages(page)
         rows: list[dict] = []
         seen_bid_nums: set[str] = set()
-        for page_no in range(1, total_pages + 1):
-            job["message"] = f"낙찰공고 목록을 수집하고 있어요 ({page_no}/{total_pages} 페이지)"
-            if page_no > 1:
-                await step1_search.go_to_page(page, page_no)
-            for row in await step1_search.scrape_list(page):
-                # 공고번호가 없는 행은 서로 다른 공고일 수 있어 합치지 않는다 (워커가 실패로 남김)
-                if not _valid_bid_num(row["bid_num"]) or row["bid_num"] not in seen_bid_nums:
-                    seen_bid_nums.add(row["bid_num"])
-                    rows.append(row)
+        # 검색어마다 목록 페이지를 새로 연다 (같은 화면에서 다시 검색하면 지역 선택이 꼬일 수 있음)
+        for term in search_terms(keyword):
+            job["message"] = f"K-apt에 접속해 '{term}' 낙찰공고 목록을 검색하고 있어요"
+
+            async def open_list(term=term):
+                await step1_search.open_bid_result_page(page)
+                await step1_search.search(page, regions, term, str(date_start), str(date_end))
+
+            await _retry("목록 검색", open_list)
+            total_pages = await step1_search.get_total_pages(page)
+            for page_no in range(1, total_pages + 1):
+                job["message"] = f"'{term}' 낙찰공고 목록을 수집하고 있어요 ({page_no}/{total_pages} 페이지)"
+                if page_no > 1:
+                    await step1_search.go_to_page(page, page_no)
+                for row in await step1_search.scrape_list(page):
+                    # 공고번호가 없는 행은 서로 다른 공고일 수 있어 합치지 않는다 (워커가 실패로 남김)
+                    # 두 검색어에 모두 걸린 공고("아스팔트 아스콘 포장")는 한 번만 넣는다
+                    if not _valid_bid_num(row["bid_num"]) or row["bid_num"] not in seen_bid_nums:
+                        seen_bid_nums.add(row["bid_num"])
+                        rows.append(row)
 
         results: list[dict | None] = [None] * len(rows)
         row_queue: asyncio.Queue = asyncio.Queue()
@@ -180,6 +190,11 @@ async def run_collect(
             LOG.warning("수집 실패 %s: %s", r.get("bid_num"), (r.get("error") or r.get("capital") or "").splitlines()[0][:300])
     LOG.info("수집: 끝 %d건 (%.1f초)", len(results), time.monotonic() - started)
     return results
+
+
+def search_terms(keyword: str) -> list[str]:
+    """"아스콘·아스팔트", "에폭시, 방수" -> 검색어 목록. K-apt는 공고명에 한 단어씩만 검색할 수 있다."""
+    return list(dict.fromkeys(t.strip() for t in re.split(r"[,·]", keyword) if t.strip()))
 
 
 async def _retry(what: str, action):

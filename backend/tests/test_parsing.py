@@ -744,6 +744,19 @@ def test_collect_request_rejects_empty_or_unknown_regions():
     CollectRequest(regions=["서울"], **base)
 
 
+def test_search_terms_split_work_type():
+    from app.main import CollectRequest, search_terms
+
+    assert search_terms("아스콘·아스팔트") == ["아스콘", "아스팔트"]
+    assert search_terms(" 에폭시 , 방수,, 에폭시") == ["에폭시", "방수"]
+    assert search_terms("보도블럭") == ["보도블럭"]
+    try:
+        CollectRequest(regions=["서울"], keyword=" · , ", date_start="2026-01-01", date_end="2026-01-31")
+    except ValidationError:
+        return
+    raise AssertionError("검색어가 비면 통과되면 안 됨")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_") and callable(v)]
     for t in tests:
